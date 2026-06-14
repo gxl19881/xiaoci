@@ -1,0 +1,5 @@
+--- Warning: GDB cannot open serial ports accessed as COMx
+--- Using \\.\COM12 instead...
+--- esp-idf-monitor 1.8.0 on \\.\COM12 115200
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+--- 0x40385bf6: esp_cpu_wait_for_intr at C:/Users/lenovo/esp/v5.4.2/esp-idf/components/esp_hw_support/cpu.c:64

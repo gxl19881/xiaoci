@@ -1,0 +1,316 @@
+Executing action: monitor
+Running idf_monitor in directory D:\xiaozhi-esp32-music
+Executing "C:\Users\lenovo\.espressif\python_env\idf5.4_py3.13_env\Scripts\python.exe C:\Users\lenovo\esp\v5.4.2\esp-idf\tools/idf_monitor.py -p COM12 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 D:\xiaozhi-esp32-music\build\xiaozhi.elf --force-color -m 'C:\Users\lenovo\.espressif\python_env\idf5.4_py3.13_env\Scripts\python.exe' 'C:\Users\lenovo\esp\v5.4.2\esp-idf\tools\idf.py' '-p' 'COM12'"...
+I (251) gpio: GPIO[48]| InputEn: 0| OutputEn: 1| OpenDrain: 0| PESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40385bf6
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x56c
+load:0x403c8700,len:0x4
+load:0x403c8704,len:0xc30
+load:0x403cb700,len:0x2e2c
+entry 0x403c890c
+I (37) octal_psram: vendor id    : 0x0d (AP)
+I (37) octal_psram: dev id       : 0x02 (generation 3)
+I (37) octal_psram: density      : 0x03 (64 Mbit)
+I (39) octal_psram: good-die     : 0x01 (Pass)
+I (43) octal_psram: Latency      : 0x01 (Fixed)
+I (48) octal_psram: VCC          : 0x01 (3V)
+I (52) octal_psram: SRF          : 0x01 (Fast Refresh)
+I (56) octal_psram: BurstType    : 0x01 (Hybrid Wrap)
+I (61) octal_psram: BurstLen     : 0x01 (32 Byte)
+I (66) octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)
+I (71) octal_psram: DriveStrength: 0x00 (1/1)
+I (75) MSPI Timing: PSRAM timing tuning index: 4
+I (79) esp_psram: Found 8MB PSRAM device
+I (83) esp_psram: Speed: 80MHz
+I (86) cpu_start: Multicore app
+I (100) cpu_start: Pro cpu start user code
+I (100) cpu_start: cpu freq: 240000000 Hz
+I (100) app_init: Application information:
+I (101) app_init: Project name:     xiaozhi
+I (104) app_init: App version:      1.8.5
+I (108) app_init: Compile time:     Nov 19 2025 14:29:41
+I (113) app_init: ELF file SHA256:  521340a4a...
+I (117) app_init: ESP-IDF:          v5.4.2
+I (121) efuse_init: Min chip rev:     v0.0
+I (125) efuse_init: Max chip rev:     v0.99 
+I (129) efuse_init: Chip rev:         v0.2
+I (133) heap_init: Initializing. RAM available for dynamic allocation:
+I (139) heap_init: At 3FCB4C60 len 00034AB0 (210 KiB): RAM
+I (144) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (149) heap_init: At 600FE01C len 00001FBC (7 KiB): RTCRAM
+I (155) esp_psram: Adding pool of 8192K of PSRAM memory to heap allocator
+I (162) spi_flash: detected chip: generic
+I (165) spi_flash: flash io: qio
+I (168) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (174) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (181) main_task: Started on CPU0
+I (191) esp_psram: Reserving pool of 64K of internal memory for DMA/internal allocations
+I (191) main_task: Calling app_main()
+I (211) Application: Listening timeout watchdog configured to 90000 ms
+I (211) Board: UUID=63e36f79-68db-4edc-9abc-b3e3475510bb SKU=df-k10
+I (221) Esp32Music: Music player initialized
+I (221) Esp32Music: MP3 decoder initialized successfully
+I (221) Board: Music player initialized for all boards
+E (231) i2c.master: i2c_master_transmit(1217): i2c transmit buffer or size invalid
+W (241) DF-K10: I2C bus seems busy at init, try recovering by toggling SCL
+I (241) gpio: GPIO[48]| InputEn: 0| OutputEn: 1| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0 
+W (251) DF-K10: I2C bus recovery done and bus re-initialized
+I (261) io_expander: Index[0] | Dir[In] | In[0] | Out[1]
+I (261) io_expander: Index[1] | Dir[In] | In[1] | Out[1]
+I (271) io_expander: Index[2] | Dir[In] | In[1] | Out[1]
+I (271) io_expander: Index[3] | Dir[In] | In[0] | Out[1]
+I (281) io_expander: Index[4] | Dir[In] | In[0] | Out[1]
+I (281) io_expander: Index[5] | Dir[In] | In[0] | Out[1]
+I (291) io_expander: Index[6] | Dir[In] | In[0] | Out[1]
+I (291) io_expander: Index[7] | Dir[In] | In[0] | Out[1]
+I (301) io_expander: Index[8] | Dir[In] | In[0] | Out[1]
+I (301) io_expander: Index[9] | Dir[In] | In[0] | Out[1]
+I (311) io_expander: Index[10] | Dir[In] | In[0] | Out[1]
+I (311) io_expander: Index[11] | Dir[In] | In[0] | Out[1]
+I (321) io_expander: Index[12] | Dir[In] | In[1] | Out[1]
+I (321) io_expander: Index[13] | Dir[In] | In[0] | Out[1]
+I (331) io_expander: Index[14] | Dir[In] | In[0] | Out[1]
+I (331) io_expander: Index[15] | Dir[In] | In[1] | Out[1]
+I (341) ili9341: LCD panel create success, version: 1.2.0
+I (461) Display: Power management not supported
+I (521) LcdDisplay: Turning display on
+I (521) LcdDisplay: Initialize LVGL library
+I (521) LcdDisplay: Initialize LVGL port
+I (521) LVGL: Starting LVGL task
+I (531) LcdDisplay: Adding LCD display
+I (581) DF-K10: Custom_SetupUI
+I (591) button: IoT Button Version: 4.1.4
+I (641) Aht20Sensor: AHT20 initialized, calibrated: YES
+I (641) Aht20Sensor: Started periodic readings with interval 3000.0 ms
+I (651) Ltr3xxSensor: LTR3xx sensor initialized successfully.
+I (651) Ltr3xxSensor: Started periodic readings with interval 100 ms
+W (651) CircularStrip: Unknown led strip event: 0
+I (651) MCP: Add tool: self.led_strip.get_brightness
+I (661) MCP: Add tool: self.led_strip.set_brightness
+I (661) MCP: Add tool: self.led_strip.set_single_color
+I (671) MCP: Add tool: self.led_strip.set_all_color
+I (671) MCP: Add tool: self.led_strip.blink
+I (671) MCP: Add tool: self.led_strip.scroll
+I (681) MCP: Add tool: self.get_temp_humid
+I (681) MCP: Add tool: self.get_als_sensor
+I (691) MCP: Add tool: self.BilibiliFans.uid
+I (691) MCP: Add tool: self.BilibiliFans.set_uid
+I (691) MCP: Add tool: self.BilibiliFans.report_fansCount
+I (701) MCP: Add tool: self.BilibiliFans.flash_fansCount
+I (701) MCP: Add tool: self.tts
+I (711) MCP: Add tool: self.translator
+I (711) MCP: Add tool: self.get_hitokoto
+I (711) MCP: Add tool: self.hitokoto_source
+I (721) MCP: Add tool: self.get_note
+I (721) s3 ll_cam: DMA Channel=1
+I (721) cam_hal: cam init ok
+I (741) ov3660: Mismatch PID=0x9090
+I (741) ov5640: Mismatch PID=0x9090
+I (741) camera: Camera PID=0x2145 VER=0x00 MIDL=0x00 MIDH=0x00
+I (741) camera: Detected GC2145 camera
+I (741) camera: Detected camera at address=0x3c
+I (1171) cam_hal: PSRAM DMA mode disabled
+I (1171) s3 ll_cam: node_size: 3840, nodes_per_line: 1, lines_per_node: 3
+I (1171) s3 ll_cam: dma_half_buffer_min:  3840, dma_half_buffer: 15360, lines_per_half_buffer: 12, dma_buffer_size: 30720
+I (1181) cam_hal: buffer_size: 30720, half_buffer_size: 15360, node_buffer_size: 3840, node_cnt: 8, total_cnt: 40
+I (1191) cam_hal: Allocating 614400 Byte frame buffer in PSRAM
+I (1191) cam_hal: cam config ok
+I (1191) gc2145: subsample win:1280x960, ratio:0.500000
+W (1211) gc2145: Unsupported
+W (1211) gc2145: Unsupported
+W (1211) gc2145: Unsupported
+W (1211) gc2145: Unsupported
+W (1211) gc2145: Unsupported
+W (1211) gc2145: Unsupported
+W (1221) gc2145: Unsupported
+W (1221) gc2145: Unsupported
+W (1221) gc2145: Unsupported
+W (1221) gc2145: Unsupported
+W (1231) gc2145: Unsupported
+W (1231) gc2145: Unsupported
+W (1231) gc2145: Unsupported
+W (1231) gc2145: Unsupported
+W (1241) gc2145: Unsupported
+I (1241) Application: STATE: starting
+W (1241) i2s_common: GPIO 0 is not usable, maybe conflict with others
+I (1251) K10AudioCodec: Duplex channels created
+I (1271) K10AudioCodec: DF-K10 AudioDevice initialized
+I (1271) AudioCodec: Saved original output sample rate: 16000 Hz
+I (1271) I2S_IF: channel mode 2 bits:16/16 channel:4 mask:3
+I (1281) I2S_IF: TDM Mode 0 bits:16/16 channel:4 sample_rate:16000 mask:3
+I (1281) I2S_IF: channel mode 0 bits:16/16 channel:4 mask:3
+I (1291) I2S_IF: STD Mode 1 bits:32/32 channel:4 sample_rate:16000 mask:0
+I (1301) Adev_Codec: Open codec device OK
+I (1301) AudioCodec: Set input enable to true
+I (1301) AudioCodec: Set output volume to 100
+I (1311) AudioCodec: Set output enable to true
+I (1311) AudioCodec: Audio codec started
+I (1321) pp: pp rom version: e7ae62f
+I (1321) net80211: net80211 rom version: e7ae62f
+I (1331) wifi:wifi driver task: 3fcebdec, prio:23, stack:6144, core=0
+I (1331) wifi:wifi firmware version: bea31f3
+I (1331) wifi:wifi certification version: v7.0
+I (1341) wifi:config NVS flash: disabled
+I (1341) wifi:config nano formatting: enabled
+I (1351) wifi:Init data frame dynamic rx buffer num: 8
+I (1351) wifi:Init dynamic rx mgmt buffer num: 5
+I (1351) wifi:Init management short buffer num: 32
+I (1361) wifi:Init dynamic tx buffer num: 32
+I (1361) wifi:Init static tx FG buffer num: 2
+I (1371) wifi:Init static rx buffer size: 1600
+I (1371) wifi:Init static rx buffer num: 6
+I (1381) wifi:Init dynamic rx buffer num: 8
+I (1381) wifi_init: rx ba win: 6
+I (1381) wifi_init: accept mbox: 6
+I (1391) wifi_init: tcpip mbox: 32
+I (1391) wifi_init: udp mbox: 6
+I (1391) wifi_init: tcp mbox: 6
+I (1391) wifi_init: tcp tx win: 5760
+I (1401) wifi_init: tcp rx win: 5760
+I (1401) wifi_init: tcp mss: 1440
+I (1401) phy_init: phy_version 701,f4f1da3a,Mar  3 2025,15:50:10
+I (1441) phy_init: Saving new calibration data due to checksum failure or outdated calibration data, mode(0)
+I (1501) wifi:mode : sta (10:51:db:78:bd:60)
+I (1501) wifi:enable tsf
+I (3711) Aht20Sensor: Temperature: 27.14°C, Humidity: 24.22%
+I (3911) wifi: Found AP: ckjs, BSSID: 68:dd:b7:9c:17:bc, RSSI: -37, Channel: 1, Authmode: 4
+W (3911) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (3991) wifi:new:<1,1>, old:<1,0>, ap:<255,255>, sta:<1,1>, prof:1, snd_ch_cfg:0x0
+I (4001) wifi:state: init -> auth (0xb0)
+I (4001) wifi:state: auth -> assoc (0x0)
+I (4011) wifi:state: assoc -> run (0x10)
+I (4151) wifi:connected with ckjs, aid = 1, channel 1, 40U, bssid = 68:dd:b7:9c:17:bc
+I (4151) wifi:security: WPA2-PSK, phy: bgn, rssi: -40
+I (4151) wifi:pm start, type: 1
+
+I (4151) wifi:dp: 1, bi: 102400, li: 3, scale listen interval from 307200 us to 307200 us
+I (4161) wifi:set rx beacon pti, rx_bcn_pti: 0, bcn_timeout: 25000, mt_pti: 0, mt_time: 10000
+I (4171) wifi:AP's beacon interval = 102400 us, DTIM period = 1
+I (4721) wifi:<ba-add>idx:0 (ifx:0, 68:dd:b7:9c:17:bc), tid:0, ssn:3, winSize:64
+I (5731) wifi: Got IP: 192.168.1.2
+I (5731) esp_netif_handlers: sta ip: 192.168.1.2, mask: 255.255.255.0, gw: 192.168.1.1
+I (5731) Application: STATE: activating
+I (5731) Ota: Current version: 1.8.5
+I (5761) Ota: No mqtt section found !
+I (5761) Ota: Current is the latest version
+I (5771) Ota: Running partition: ota_0
+I (5771) MCP: Add tool: self.get_device_status
+I (5771) MCP: Add tool: self.audio_speaker.set_volume
+I (5771) MCP: Add tool: self.screen.set_theme
+I (5781) MCP: Add tool: self.camera.take_photo
+I (5781) MCP: Add tool: self.camera.recognize_number
+I (5791) MCP: Add tool: self.music.play_song
+I (5791) MCP: Add tool: self.music.play_radio
+I (5791) Application: STATE: idle
+I (5801) MODEL_LOADER: The storage free size is 19392 KB
+I (5801) MODEL_LOADER: The partition size is 960 KB
+I (5811) MODEL_LOADER: Successfully load srmodels
+I (5811) AfeWakeWord: Model 0: wn9_nihaoxiaozhi_tts
+I (5811) AFE_CONFIG: Set WakeNet Model: wn9_nihaoxiaozhi_tts
+MC Quantized wakenet9: wakenet9l_tts1h8_你好小智_3_0.631_0.635, tigger:v4, mode:0, p:0, (Aug 11 2025 15:20:50)
+I (5911) AFE: AFE Version: (1MIC_V250121)
+I (5911) AFE: Input PCM Config: total 2 channels(1 microphone, 1 playback), sample rate:16000
+I (5921) AFE: AFE Pipeline: [input] -> |AEC(SR_HIGH_PERF)| ->  -> |VAD(WebRTC)| -> |WakeNet(wn9_nihaoxiaozhi_tts,)| -> [output]
+I (5931) AfeWakeWord: Audio detection task started, feed size: 512 fetch size: 512
+W (5941) Application: Alert 提示: 请只报出学号数字，比如：一八三零二 [neutral]
+I (5961) DF-K10: SET CHAT MESSAGE
+I (5971) DF-K10: Label Width: 282-238
+I (6041) DF-K10: SET CHAT MESSAGE
+I (6041) SystemInfo: free sram: 25495 minimal sram: 25459
+I (6041) Application: STATE: connecting
+I (6041) Application: Stopping music streaming due to state change: idle -> connecting
+I (6051) Esp32Music: Stopping music streaming - current state: downloading=0, playing=0
+W (6061) Esp32Music: No streaming in progress
+I (6061) DF-K10: SET CHAT MESSAGE
+I (6071) WS: Using compiled WebSocket defaults (forced): ws://192.168.22.53:8000/xiaozhi/v1/, version: 1
+I (6071) WS: Connecting to websocket server: ws://192.168.22.53:8000/xiaozhi/v1/ with version: 1
+I (6161) WS: Session ID: ef4d921a-8319-4fe5-98b4-eb502e2b7d2c
+I (6171) wifi:Set ps type: 0, coexist: 0
+
+I (6171) Application: Listening mode set to 1
+I (6171) Application: STATE: listening
+I (6181) Protocol: SendStartListening mode=1
+I (6181) AfeAudioProcessor: SR models: ns=none, vad=none
+I (6181) AfeAudioProcessor: Noise suppression ENABLED (NSNet)
+I (6191) AFE: AFE Version: (1MIC_V250121)
+I (6191) AFE: Input PCM Config: total 2 channels(1 microphone, 1 playback), sample rate:16000
+I (6201) AFE: AFE Pipeline: [input] -> |NS(WebRTC)| -> |AGC(WebRTC)| -> |VAD(WebRTC)| -> [output]
+I (6211) AfeAudioProcessor: Audio communication task started, feed size: 160 fetch size: 512
+I (6211) Application: Listening watchdog armed (mode=1, timeout=90000 ms)
+I (6711) Aht20Sensor: Temperature: 27.17°C, Humidity: 24.20%
+I (9711) Aht20Sensor: Temperature: 27.16°C, Humidity: 24.20%
+I (10071) AfeAudioProcessor: Auto-adjusting noise reduction: 1 -> 0 (noise level: 1832)
+I (10071) AfeAudioProcessor: Noise reduction mode set to: 0
+I (12711) Aht20Sensor: Temperature: 27.15°C, Humidity: 24.14%
+I (15321) SystemInfo: free sram: 12523 minimal sram: 8999
+I (15711) Aht20Sensor: Temperature: 27.15°C, Humidity: 24.15%
+I (18711) Aht20Sensor: Temperature: 27.13°C, Humidity: 24.08%
+I (21321) AudioCodec: Set output volume to 100
+I (21321) AudioCodec: Set output enable to false
+I (21711) Aht20Sensor: Temperature: 27.13°C, Humidity: 24.15%
+I (24711) Aht20Sensor: Temperature: 27.15°C, Humidity: 24.09%
+I (25321) SystemInfo: free sram: 12559 minimal sram: 8039
+I (27711) Aht20Sensor: Temperature: 27.11°C, Humidity: 24.05%
+I (30711) Aht20Sensor: Temperature: 27.12°C, Humidity: 24.08%
+I (33711) Aht20Sensor: Temperature: 27.11°C, Humidity: 24.06%
+I (35321) SystemInfo: free sram: 12563 minimal sram: 8039
+I (36711) Aht20Sensor: Temperature: 27.15°C, Humidity: 24.03%
+I (39711) Aht20Sensor: Temperature: 27.14°C, Humidity: 24.04%
+I (42711) Aht20Sensor: Temperature: 27.13°C, Humidity: 24.07%
+I (45321) SystemInfo: free sram: 12039 minimal sram: 8039
+I (45711) Aht20Sensor: Temperature: 27.11°C, Humidity: 24.04%
+I (48711) Aht20Sensor: Temperature: 27.10°C, Humidity: 24.00%
+I (51711) Aht20Sensor: Temperature: 27.08°C, Humidity: 24.05%
+I (54711) Aht20Sensor: Temperature: 27.06°C, Humidity: 24.04%
+I (55321) SystemInfo: free sram: 12023 minimal sram: 8039
+I (57711) Aht20Sensor: Temperature: 27.04°C, Humidity: 24.04%
+I (60711) Aht20Sensor: Temperature: 27.04°C, Humidity: 24.07%
+I (63711) Aht20Sensor: Temperature: 27.04°C, Humidity: 24.05%
+I (65321) SystemInfo: free sram: 12027 minimal sram: 8039
+I (66711) Aht20Sensor: Temperature: 27.05°C, Humidity: 24.06%
+I (69711) Aht20Sensor: Temperature: 27.04°C, Humidity: 24.01%
+I (72711) Aht20Sensor: Temperature: 27.00°C, Humidity: 23.99%
+I (75321) SystemInfo: free sram: 12051 minimal sram: 8039
+I (75711) Aht20Sensor: Temperature: 27.01°C, Humidity: 23.97%
+I (78711) Aht20Sensor: Temperature: 26.98°C, Humidity: 23.84%
+I (81711) Aht20Sensor: Temperature: 26.99°C, Humidity: 23.91%
+I (84711) Aht20Sensor: Temperature: 26.95°C, Humidity: 23.88%
+I (85321) SystemInfo: free sram: 12547 minimal sram: 8039
+I (87711) Aht20Sensor: Temperature: 26.94°C, Humidity: 23.89%
+I (90711) Aht20Sensor: Temperature: 26.97°C, Humidity: 23.98%
+I (93711) Aht20Sensor: Temperature: 26.93°C, Humidity: 23.96%
+I (95321) SystemInfo: free sram: 12035 minimal sram: 8039
+I (96221) Application: Listening timeout reached (90000 ms), stopping...
+I (96221) Protocol: SendStopListening
+I (96221) Application: STATE: idle
+I (96711) Aht20Sensor: Temperature: 26.98°C, Humidity: 23.99%
+I (99711) Aht20Sensor: Temperature: 26.98°C, Humidity: 24.02%
+I (102711) Aht20Sensor: Temperature: 27.00°C, Humidity: 24.06%
+I (105321) SystemInfo: free sram: 12439 minimal sram: 8039
+I (105711) Aht20Sensor: Temperature: 26.82°C, Humidity: 24.46%
+I (107561) Application: Listening mode set to 1
+I (107561) Application: STATE: listening
+I (107561) Application: Stopping music streaming due to state change: idle -> listening
+I (107571) Esp32Music: Stopping music streaming - current state: downloading=0, playing=0
+W (107571) Esp32Music: No streaming in progress
+I (107581) Protocol: SendStartListening mode=1
+I (107581) Application: Listening watchdog armed (mode=1, timeout=90000 ms)
+I (108711) Aht20Sensor: Temperature: 26.88°C, Humidity: 25.19%
+I (111711) Aht20Sensor: Temperature: 26.87°C, Humidity: 26.30%
+I (112451) Application: >> 24
+I (112471) Protocol: SendStopListening
+I (112471) Application: STATE: idle
+I (114711) Aht20Sensor: Temperature: 26.98°C, Humidity: 27.56%
+I (117711) Aht20Sensor: Temperature: 27.03°C, Humidity: 27.76%
+I (120711) Aht20Sensor: Temperature: 27.09°C, Humidity: 28.41%
+I (122321) SystemInfo: free sram: 17195 minimal sram: 8039
+I (123711) Aht20Sensor: Temperature: 27.13°C, Humidity: 28.35%
+I (126711) Aht20Sensor: Temperature: 27.22°C, Humidity: 28.81%
+I (129711) Aht20Sensor: Temperature: 27.07°C, Humidity: 28.12%
+I (132321) SystemInfo: free sram: 17215 minimal sram: 8039
+I (132711) Aht20Sensor: Temperature: 27.15°C, Humidity: 27.55%
+I (135711) Aht20Sensor: Temperature: 27.18°C, Humidity: 26.93%

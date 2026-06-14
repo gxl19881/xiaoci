@@ -1,0 +1,38 @@
+# 自动生成的覆盖配置（由助手创建）
+# 说明：显式指定 websocket / vision_explain / ota_base，避免容器内探测出 Docker 内部 IP
+
+server:
+  websocket: ws://192.168.1.4:8000/xiaozhi/v1/
+  vision_explain: http://192.168.1.4:8003/mcp/vision/explain
+  ota_base: http://192.168.1.4:8003/xiaozhi/ota/
+  http_port: 8003
+  websocket_port: 8000
+
+# 如需启用 TLS/域名，替换为 wss://your.domain 和 https://your.domain
+
+selected_module:
+  LLM: ChatGLMLLM
+
+LLM:
+  ChatGLMLLM:
+    api_key: "<在此填入你的LLM_KEY>"
+
+plugins:
+  generate_image:
+    provider: zhipu
+    zhipu_api_key: "<在此填入你的ZHIPU_IMAGE_KEY>"
+    default_size: 512x512
+    default_style: cartoon
+    esp32_width: 240
+    esp32_height: 240
+
+# 视觉功能开关（若主程序读取 capabilities 需要）
+capabilities:
+  vision: true
+  image: true
+
+# (可选) 若将来添加鉴权token，可放这里
+vision:
+  auth_token: ""
+
+# 备注：创建后请重启容器使其生效。

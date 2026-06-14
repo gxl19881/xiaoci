@@ -1,0 +1,174 @@
+### 合并后的配置文件
+# 说明：
+# 1. 保留原有 Intent 与 generate_image 设置及真实密钥。
+# 2. 引入 server 显式地址，避免 Docker 内部 IP 下发。
+# 3. 添加 capabilities 供设备能力解析（vision/image）。
+# 4. 若后续启用域名与 TLS，请修改 server 下的地址。
+
+server:
+  websocket: ws://140.143.199.58:9000/xiaozhi/v1/
+  vision_explain: http://140.143.199.58:9003/mcp/vision/explain
+  ota_base: http://140.143.199.58:9003/xiaozhi/ota/
+  http_port: 8003
+  websocket_port: 8000
+
+# 意图识别配置（原样保留）
+Intent:
+  function_call:
+    type: function_call
+    functions:
+      - change_role
+      - get_weather
+      - get_news_from_newsnow
+      - play_music
+      - generate_image
+      - generate_grade_report
+
+selected_module:
+  LLM: ChatGLMLLM
+  ASR: sherpa_onnx_local
+  VLLM: QwenVL
+  VAD: SileroVAD
+  TTS: DoubaoTTS
+
+
+LLM:
+  ChatGLMLLM:
+    # 仅在本地覆盖中提供密钥，其他字段沿用默认config.yaml（type/url/model_name）
+    api_key: "e514224a2f364e13aead80a39830a6bc.i8O8JPIJJAxPyAZd"
+ASR:
+  sherpa_onnx_local:
+    type: sherpa_onnx_local
+    # 使用 SenseVoice 小模型（若目录无 onnx/tokens，会自动从 ModelScope 下载所需文件到该目录）
+    model_dir: /opt/xiaozhi-esp32-server/models/SenseVoiceSmall
+    model_type: sense_voice
+    output_dir: tmp/
+    # 可选自定义：url / model_name
+    # url: https://open.bigmodel.cn/api/paas/v4/
+    # model_name: glm-4-flash
+
+# 临时注入 VLLM(视觉大模型) 的 API Key（仅本地覆盖文件生效，不修改主配置）
+VLLM:
+  QwenVL:
+    type: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    # 请务必替换为您真实的阿里云 DashScope API Key
+    api_key: "sk-e771bdb701a743ef8b8cef110ad569f4"
+    # 使用用户指定的思考模型 (需确保已申请到该模型权限，否则可能会报无权限错误)
+    model_name: qwen3-vl-235b-a22b-thinking
+    max_tokens: 500
+    temperature: 0.1
+  ChatGLMVLLM:
+    api_key: "e514224a2f364e13aead80a39830a6bc.i8O8JPIJJAxPyAZd"
+    # 可按需覆盖以下两项（与主配置保持一致即可）
+    # url: https://open.bigmodel.cn/api/paas/v4/
+    # model_name: glm-4v-flash
+  openai:
+    # 使用 OpenAI 兼容接口；切换到豆包 Doubao Ark 视觉模型
+    # 建议将密钥通过环境变量注入：
+    #   $env:ARK_API_KEY="<你的Ark密钥>"（Windows PowerShell）
+    # 或使用通用 VLLM_API_KEY，以避免把真实密钥写入文件
+    api_key: "ced2f0a7-933d-40ea-a892-12b61bfbc62b"  # 留空以优先从环境变量 VLLM_API_KEY/ARK_API_KEY 读取
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model_name: doubao-seed-1-6-vision-250815
+    # 为设备端拍照解释优化延迟：限制生成长度、降低随机性，通常可将响应时间压至 10-20s 内
+    max_tokens: 120
+    temperature: 0.3
+    top_p: 0.9
+  BaiduOCR:
+    # 视觉改用百度OCR（识别更稳），优先读取环境变量：
+    #   BAIDU_OCR_APP_ID / BAIDU_OCR_API_KEY / BAIDU_OCR_SECRET_KEY
+    # 若环境变量未设置，则使用下方配置（不建议把真实密钥写入仓库）
+    type: baidu_ocr
+    app_id: "119425989"
+    api_key: "AkIJg7VnvjDRx5vme10qBxaS"
+    secret_key: "DpgWPb7TMCdpOPOpWthtkrn5wbCNCwwI"
+    # 模式：general_basic（通用）或 accurate_basic（高精度，更准但略慢）
+    mode: general_basic
+    language_type: CHN_ENG
+    detect_direction: true
+    probability: false
+
+plugins:
+  generate_image:
+    provider: zhipu
+    zhipu_api_key: "e514224a2f364e13aead80a39830a6bc.i8O8JPIJJAxPyAZd"
+    default_size: "512x512"
+    default_style: "cartoon"
+    esp32_width: 240
+    esp32_height: 240
+    #provider: doubao
+    #doubao_api_key: "ced2f0a7-933d-40ea-a892-12b61bfbc62b"
+    #doubao_model: "ep-20260302153352-fb98g"
+    #zhipu_api_key: "e514224a2f364e13aead80a39830a6bc.i8O8JPIJJAxPyAZd"
+    #default_size: "512x512"
+    #default_style: "cartoon"
+    #esp32_width: 240
+    #esp32_height: 240
+
+VAD:
+  SileroVAD:
+    type: silero
+    threshold: 0.7
+    threshold_low: 0.5
+    model_dir: models/snakers4_silero-vad
+    min_silence_duration_ms: 1000
+
+capabilities:
+  vision: true
+  image: true
+
+vision:
+  auth_token: ""  # 可留空；需要鉴权时填写并在设备端附带
+  # 是否将视觉分析的原始图片与结果落盘保存（默认关闭）
+  persist: true
+  # 持久化根目录（容器内路径），按天分文件夹：YYYYMMDD
+  persist_dir: "data/vision_records"
+  # 分析超时（秒）：设备拍照→上传→模型分析→回传整个链路的上限
+  timeout_seconds: 60
+  # 在相机分析时，服务端定期发送保活短句到设备，避免 20–30s 静默被设备断开
+  keepalive_hint: true
+  # 保活：首次提前发送，缩短间隔并增加次数以覆盖整个分析窗口
+  keepalive_first_delay: 2
+  keepalive_interval: 6
+  keepalive_max: 8
+  # 第二段及后续保活文案（首段使用“我在分析这张照片，请稍等”）
+  keepalive_text2: "我还在分析，请再等一下"
+  # 若迟迟未收到照片，提示重试并再次发起拍照（设备端MCP工具）
+  no_photo_retry_seconds: 15
+  no_photo_retry_text: "我还在分析"
+
+TTS:
+  Qwen3TTS:
+    type: qwen
+    # 将模型更换为 CosyVoice-v1
+    model: cosyvoice-v1
+    # 默认音色，更多音色参考文档。longwan: 知性温柔女声(老师)
+    voice: longwan
+    # 你的阿里云百炼API密钥
+    api_key: sk-e771bdb701a743ef8b8cef110ad569f4
+    format: pcm
+    sample_rate: 24000
+    volume: 50
+    rate: 1.0
+  DoubaoTTS:
+    type: doubao
+    api_url: https://openspeech.bytedance.com/api/v1/tts
+    voice: BV001_streaming
+    appid: 8875345003
+    access_token: IXmGCgMlCdcKGw5l06Js13e1EhGNU0ej
+    cluster: volcano_tts
+    speed_ratio: 1.0
+    volume_ratio: 1.0
+    
+# 可选：切换其它 LLM 时的参考
+# Doubao 示例：
+# selected_module:
+#   LLM: DoubaoLLM
+# LLM:
+#   DoubaoLLM:
+#     base_url: https://ark.cn-beijing.volces.com/api/v3
+#     model_name: doubao-1-5-pro-32k-250115
+#     api_key: "<YOUR_Doubao_KEY>"
+
+# 提醒：修改本文件后需重启容器： docker restart xiaozhi-esp32-server

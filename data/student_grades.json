@@ -1,0 +1,7 @@
+{
+    "18302": {"name": "Alice", "math": 85, "english": 90, "science": 88},
+    "830": {"name": "Bob", "math": 78, "english": 82, "science": 80},
+    "80": {"name": "Charlie", "math": 92, "english": 88, "science": 95},
+    "8030": {"name": "David", "math": 60, "english": 70, "science": 65},
+    "8031": {"name": "Eve", "math": 95, "english": 98, "science": 92}
+}

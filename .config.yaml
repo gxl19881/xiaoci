@@ -6,7 +6,7 @@ plugins:
     # 使用智谱AI作为图片生成服务提供商
     provider: "zhipu"
     # 智谱AI API密钥
-    zhipu_api_key: "e514224a2f364e13aead80a39830a6bc.i8O8JPIJJAxPyAZd"
+    zhipu_api_key: "你的智谱密钥"
     # 默认图片尺寸
     default_size: "512x512"
     # 默认图片风格

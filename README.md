@@ -1,209 +1,60 @@
-# 小智开源音乐固件
+﻿# 智绘课堂·数驱精准——“小慈AI学伴”智能体固件
 
 （中文 | [English](README_en.md) | [日本語](README_ja.md)）
 
-## 视频
+## 🌟 项目简介
 
-👉 [【开源】虾哥ai小智机器音乐播放器纯固件带歌词显示](https://www.bilibili.com/video/BV19oM4zqEiz)
+本项目是专为 **行空板K10 (Unihiker K10 / DFRobot K10)** 深度定制和改造的教育智能体固件。
 
-👉 [【开源】虾哥小智音乐播放器纯固件](https://www.bilibili.com/video/BV1RqMEzEEp1)
+基于优秀的开源项目 [xiaozhi-esp32 (虾哥小智音乐播放器纯固件)](https://github.com/78/xiaozhi-esp32) 进行了一次充满创新的教育升级，将其原有的全能互动能力，转化为面向小学教育场景的 **“智绘课堂·数驱精准——赋能小学数据驱动教学新范式”** 的核心终端载体。
 
-## 介绍
+通过深度适配行空板 K10 的硬件特性，“小慈AI学伴”不仅能够作为课堂上的智能助教，更是学生的贴心伴学伙伴，它融合了多模态的互动教学，全面助力教育环境的数字化与智能化转型。
 
-这是一个由虾哥开源的[ESP32项目](https://github.com/78/xiaozhi-esp32)，以 MIT 许可证发布，允许任何人免费使用，或用于商业用途。
+## ✨ 核心功能与优势亮点
 
-我们希望通过这个项目，让大家的小智都能播放歌曲。
+### 1. 行空板 K10 硬件级深度适配
+- **UI 增强与学情指引**：深度适配 K10 的屏幕显示能力，提供更友好的交互界面、动态表情，以及适用于课堂场景的视觉提示（如：引导界面、状态切换、焦点提示等）。
+- **完善的外设驱动**：深入优化音频输入（Mic）与输出（Speaker），适配 K10 板载各项传感器，确保复杂教室内环境的极速响应与清晰收音。
+- **开箱即用，极简部署**：针对于 K10 的专门引脚分配与内核参数调优已全盘内置，极大降低了教育一线教师和校方运维的部署门槛。
 
-如果你有任何想法或建议，请随时提出 Issues 或加入 QQ 群：826072986
+### 2. 聚焦“数驱精准”教学新范式
+- **学科伴学与互动引导**：交互重心从纯闲聊娱乐，迁移为课辅问答、百科知识搜索、错题思路分析。
+- **数据驱动闭环**：通过 WebSocket/MQTT 协议与教室的“中枢智能服务器”实时通讯，支持将课堂互动数据、提问热点等学情内容反哺给教师终端，真正实现“数据驱动的精准教学”。
 
-项目主要贡献者：空白泡泡糖果（B站UP），硅灵造物科技（B站UP）
+### 3. 多模态反馈与智能外设生态（MCP）
+- 🤖 **毫秒级 AI 语音对话**：基于流式 ASR + 强大基础模型 (如 DeepSeek / Qwen 等) + TTS 架构，实现无缝互动的教学答疑。
+- 🎵 **教育音频点播**：优化了原有项目的音频播放组件 （支持 MCP Tool \self.music.play_song\），可用于播放中英文听力材料、历史有声读物、睡前儿歌等专属教育素材。
+- 🏠 **万物互联控制**：通过设备端 / 云端 MCP 协议，无缝联动课堂周边的智能教具、灯光或实验硬件。
 
-音乐服务器提供者（为爱发电）：蔓延科技
+---
 
-### 💡注意事项
+## ⚖️ 免责声明与版权鸣谢 (极为重要)
 
-#### 1. 如果小智说找不到歌曲怎么办？
-进入[小智后台](https://xiaozhi.me/)，找到对应设备，修改角色配置
-- 选择 DeepSeekV3 大语言模型
-- 在人物介绍中填入
-  - 收到音乐相关的需求时，只使用 MPC tool `self.music.play_song` 工具，同时禁止使用 `search_music` 功能。
+### 💖 版权鸣谢
+本项目是基于 **[虾哥(GitHub: 78/xiaozhi-esp32)](https://github.com/78/xiaozhi-esp32)** 发起的“小智开源固件”项目衍生而来的二次开发改造版本。
+固件底层代码中包含了该项目社区以及前序多位开源贡献者（包含且不限于：空白泡泡糖果、硅灵造物科技、蔓延科技等）的心血与创意。
+在此，本团队对所有开源先行者为开源社区做出的巨大、无私的贡献致以最崇高的敬意与鸣谢！
 
+### ⚠️ 免责声明 (Disclaimer)
+为避免潜在侵权及滥用，保障所有开源参与者的权益，特做以下声明：
+1. **开源协议与限制**：本项目作为衍生修改版，继续遵循原仓库的 [MIT 许可证](LICENSE)。本固件和相关文档**仅供教育行业数字化探究、前沿学术研究、学校试用及个人的编程学习使用**。
+2. **知识产权与商业活动**：相关参与者明确声明，开发者不对任何将本固件、代码或原版涉及代码用于未经授权的**商业牟利、非法倒卖、或侵犯原作者及关联第三方知识产权**的行为进行背书或负责。如因使用者违规挪用而引起的各类版权纠纷、法律诉讼等，一律由违规使用者自行承担全部法律与经济责任。
+3. **AI 生成内容免责**：“小慈AI学伴”产生的任何语音、文本解析或观点，均依赖云端大语言模型实时生成，绝不代表硬件及本固件开发者的立场。投入真实教学场景前，校方或使用者务必自行在后台配置和接管安全守护墙及未成年人内容过滤机制。
+4. **设备及数据损坏概不负责**：硬件改造与自定义固件操作天然具备不确定风险。开发者不对任何因此引致的行空板K10设备损坏、主板烧毁、信息遗失、或直接/间接经济损失负任何责任。请严格规范操作，数据提前备份。
 
-#### 2. 内置API调用报错怎么办？
-加入QQ群：826072986，把Mac地址发给“蔓延科技”申请权限，如下：
-```
-@蔓延科技 你好，有空帮忙加个权限，mac: 20-2B-20-7B-C8-47
-```
+---
 
+## 🛠️ 后台设置与角色定制
 
-#### 3. 暂不支持的开发板
-- ESP32C3芯片的开发板
+要实现真正的“小慈教育学伴”功效，后台的人格定义需要严谨的调配。如果您接入的是自建的 AI 中枢，或者使用官方 [xiaozhi.me](https://xiaozhi.me) 控制台，请进行如下设置：
 
+- 选择逻辑能力顶尖的智能模型（推荐：**DeepSeekV3 / R1** 等系列）。
+- **角色介绍（Prompt）参考样例**：
+  > “你的名字叫‘小慈’，是一名阳光温暖、具备专业素养的小学AI伴学机器人。你要用鼓励和平和的语气解答小学生的疑问，严格拒绝解答、提供任何负能量或存在安全隐患的内容。遇到数学和科学问题，请绝不直接抛出最终答案，而是提供解题思路循循善诱。你不仅是一个回答者，还是学习的好伙伴。如果学生希望听学习材料/故事，你可以调用 \self.music.play_song\ 等工具。”
 
-### 项目改动范围
+## 💻 编译与贡献
 
-#### 新增
-- main\boards\common\esp32_music.cc
-- main\boards\common\esp32_music.h
-
-#### 修改
-- main\mcp_server.cc
-- main\boards\common\board.cc
-- main\boards\common\board.h
-- main\application.cc
-- main\application.h
-- main\display\display.cc
-- main\display\display.h
-- main\audio\audio_service.cc
-- main\audio\audio_service.h
-- main\idf_component.yml
-
-
-
-### 基于 MCP 控制万物
-
-小智 AI 聊天机器人作为一个语音交互入口，利用 Qwen / DeepSeek 等大模型的 AI 能力，通过 MCP 协议实现多端控制。
-
-![通过MCP控制万物](docs/mcp-based-graph.jpg)
-
-### 已实现功能
-
-- 🎭 **丰富的角色定制系统**：支持台湾女友、土豆子、English Tutor 等多种预设角色
-- 🎨 **个性化配置**：自定义助手昵称、对话语言、角色音色和性格介绍
-- 🎵 **智能音乐控制**：支持 `self.music.play_song` 工具进行音乐播放控制
-- 📡 Wi-Fi / ML307 Cat.1 4G 网络连接
-- 🗣️ 离线语音唤醒 [ESP-SR](https://github.com/espressif/esp-sr)
-- 🔗 支持两种通信协议（[Websocket](docs/websocket.md) 或 MQTT+UDP）
-- 🎧 采用 OPUS 音频编解码
-- 🤖 基于流式 ASR + LLM + TTS 架构的语音交互
-- 👤 声纹识别，识别当前说话人的身份 [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- 📺 OLED / LCD 显示屏，支持表情显示
-- 🔋 电量显示与电源管理
-- 🌍 支持多语言（中文、英文、日文）
-- 💻 支持 ESP32-C3、ESP32-S3、ESP32-P4 芯片平台
-- 🏠 通过设备端 MCP 实现设备控制（音量、灯光、电机、GPIO 等）
-- ☁️ 通过云端 MCP 扩展大模型能力（智能家居控制、PC桌面操作、知识搜索、邮件收发等）
-
-## 硬件
-
-### 面包板手工制作实践
-
-详见飞书文档教程：
-
-👉 [《小智 AI 聊天机器人百科全书》](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
-
-面包板效果图如下：
-
-![面包板效果图](docs/v1/wiring2.jpg)
-
-### 支持 70 多个开源硬件（仅展示部分）
-
-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="立创·实战派 ESP32-S3 开发板">立创·实战派 ESP32-S3 开发板</a>
-- <a href="https://github.com/espressif/esp-box" target="_blank" title="乐鑫 ESP32-S3-BOX3">乐鑫 ESP32-S3-BOX3</a>
-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="神奇按钮 2.4">神奇按钮 2.4</a>
-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="微雪电子 ESP32-S3-Touch-AMOLED-1.8">微雪电子 ESP32-S3-Touch-AMOLED-1.8</a>
-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="虾哥 Mini C3">虾哥 Mini C3</a>
-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">璀璨·AI 吊坠</a>
-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="无名科技Nologo-星智-1.54">无名科技 Nologo-星智-1.54TFT</a>
-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI 超低成本机器狗">ESP-HI 超低成本机器狗</a>
-
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="立创·实战派 ESP32-S3 开发板">
-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/espbox3.jpg" target="_blank" title="乐鑫 ESP32-S3-BOX3">
-    <img src="docs/v1/espbox3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
-    <img src="docs/v1/m5cores3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
-    <img src="docs/v1/atoms3r.jpg" width="240" />
-  </a>
-  <a href="docs/v1/magiclick.jpg" target="_blank" title="神奇按钮 2.4">
-    <img src="docs/v1/magiclick.jpg" width="240" />
-  </a>
-  <a href="docs/v1/waveshare.jpg" target="_blank" title="微雪电子 ESP32-S3-Touch-AMOLED-1.8">
-    <img src="docs/v1/waveshare.jpg" width="240" />
-  </a>
-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="虾哥 Mini C3">
-    <img src="docs/v1/xmini-c3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="无名科技Nologo-星智-1.54">
-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
-  </a>
-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
-  </a>
-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI 超低成本机器狗">
-    <img src="docs/v1/esp-hi.jpg" width="240" />
-  </a>
-</div>
-
-## 软件
-
-### 固件烧录
-
-新手第一次操作建议先不要搭建开发环境，直接使用免开发环境烧录的固件。
-
-固件默认接入 [xiaozhi.me](https://xiaozhi.me) 官方服务器，个人用户注册账号可以免费使用 Qwen 实时模型。
-
-👉 [新手烧录固件教程](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
-
-### 开发环境
-
-- Cursor 或 VSCode
-- 安装 ESP-IDF 插件，选择 SDK 版本 5.4 或以上
-- Linux 比 Windows 更好，编译速度快，也免去驱动问题的困扰
-- 本项目使用 Google C++ 代码风格，提交代码时请确保符合规范
-
-### 开发者文档
-
-- [自定义开发板指南](main/boards/README.md) - 学习如何为小智 AI 创建自定义开发板
-- [MCP 协议物联网控制用法说明](docs/mcp-usage.md) - 了解如何通过 MCP 协议控制物联网设备
-- [MCP 协议交互流程](docs/mcp-protocol.md) - 设备端 MCP 协议的实现方式
-- [一份详细的 WebSocket 通信协议文档](docs/websocket.md)
-
-## 大模型配置
-
-如果你已经拥有一个的小智 AI 聊天机器人设备，并且已接入官方服务器，可以登录 [xiaozhi.me](https://xiaozhi.me) 控制台进行配置。
-
-### 🎭 角色配置指南
-
-在 [xiaozhi.me](https://xiaozhi.me) 控制台中，您可以：
-
-1. **选择角色模板**：从台湾女友、土豆子、English Tutor、好奇小男孩、汪汪队队长等预设角色中选择
-2. **设置助手昵称**：为您的 AI 伴侣起一个专属的名字（默认：小智）
-3. **配置对话语言**：支持普通话、英语、日语等多种语言
-4. **选择角色音色**：清澈小何等多种音色可供选择
-5. **自定义角色介绍**：详细描述角色的性格特点和背景设定
-
-💡 **特别功能**：收到音乐相关需求时，小智会优先使用 `self.music.play_song` 工具，确保音乐播放体验的流畅性。
-
-👉 [后台操作视频教程（旧版界面）](https://www.bilibili.com/video/BV1jUCUY2EKM/)
-
-## 相关开源项目
-
-在个人电脑上部署服务器，可以参考以下第三方开源的项目：
-
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python 服务器
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java 服务器
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang 服务器
-
-使用小智通信协议的第三方客户端项目：
-
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python 客户端
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android 客户端
-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) 百问科技提供的 Linux 客户端
-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) 思澈科技的蓝牙芯片固件
-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) 移远提供的 QuecPython 固件
+1. 推荐使用 **VSCode** 或 **Cursor**，安装 **ESP-IDF 插件 (版本 5.4 及以上)**。
+2. Windows 环境可通过 WSL 或直接在 Linux 下开发以明显加速编译。
+3. 核心驱动变更可参阅：\main/boards/common/esp32_music.cc\ 及配套文件。
+4. 代码风格遵循 Google C++ 规范，欢迎教育同仁与极客们提交 PR（Pull Requests）和 Issues 共建该教育终端。

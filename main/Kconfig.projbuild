@@ -2,7 +2,7 @@ menu "Xiaozhi Assistant"
 
 config OTA_URL
     string "Default OTA URL"
-    default "http://140.143.199.58:9003/xiaozhi/ota/"
+    default "http://IP:9003/xiaozhi/ota/"
     help
         The application will access this URL to check for new firmwares and server address.
 
@@ -11,7 +11,7 @@ config OTA_URL
 #
 config WEBSOCKET_URL
     string "Default WebSocket URL"
-    default "ws://140.143.199.58:9000/xiaozhi/v1/"
+    default "ws://IP:9000/xiaozhi/v1/"
     help
         Default WebSocket endpoint used when Settings("websocket").url is empty
         or when WEBSOCKET_FORCE_DEFAULT is enabled.

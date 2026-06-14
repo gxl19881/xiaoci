@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智谱AI图像生成测试</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 1000px; 
+            margin: 0 auto; 
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .test-section { 
+            background: white;
+            border: 1px solid #ddd; 
+            margin: 20px 0; 
+            padding: 20px; 
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .warning { background-color: #fff3cd; border-color: #ffeaa7; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        button { 
+            padding: 12px 24px; 
+            margin: 8px; 
+            background: #007bff; 
+            color: white; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        #messages { 
+            height: 400px; 
+            overflow-y: auto; 
+            border: 1px solid #ccc; 
+            padding: 15px; 
+            margin: 15px 0; 
+            background: #f8f9fa;
+            border-radius: 5px;
+            font-family: monospace;
+        }
+        .message { 
+            margin: 8px 0; 
+            padding: 8px; 
+            border-radius: 4px; 
+        }
+        .message.sent { background: #007bff; color: white; margin-left: 40px; }
+        .message.received { background: #28a745; color: white; margin-right: 40px; }
+        .message.error { background: #dc3545; color: white; }
+        .message.info { background: #17a2b8; color: white; }
+        .status { font-weight: bold; margin: 15px 0; font-size: 18px; }
+        .input-group {
+            margin: 15px 0;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .input-group input, .input-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎨 智谱AI图像生成测试系统</h1>
+        <p>端到端AI图像生成功能验证</p>
+    </div>
+    
+    <div class="test-section">
+        <h3>🔗 连接状态</h3>
+        <div id="connectionStatus" class="status">🔴 未连接</div>
+        <button onclick="connectWebSocket()">连接WebSocket</button>
+        <button onclick="disconnectWebSocket()">断开连接</button>
+        <button onclick="testConnection()">测试连接</button>
+    </div>
+    
+    <div class="test-section">
+        <h3>🎨 图像生成配置</h3>
+        <div class="input-group">
+            <label>图片描述提示词:</label>
+            <input type="text" id="imagePrompt" value="一只可爱的小猫咪坐在窗台上，阳光洒在它的毛发上" placeholder="描述您想要生成的图片...">
+        </div>
+        <div class="input-group">
+            <label>图片风格:</label>
+            <select id="imageStyle">
+                <option value="realistic">写实风格</option>
+                <option value="cartoon" selected>卡通风格</option>
+                <option value="anime">动漫风格</option>
+                <option value="abstract">抽象风格</option>
+            </select>
+        </div>
+        <div class="input-group">
+            <label>图片尺寸:</label>
+            <select id="imageSize">
+                <option value="512x512" selected>512x512 (标准)</option>
+                <option value="768x768">768x768 (高清)</option>
+                <option value="1024x1024">1024x1024 (超高清)</option>
+            </select>
+        </div>
+        <button onclick="generateImage()" id="generateBtn">🎨 生成图片</button>
+        <button onclick="sendTextCommand()">💬 发送文本指令</button>
+        <button onclick="quickTest()">⚡ 快速测试</button>
+    </div>
+    
+    <div class="stats">
+        <div class="stat-card">
+            <div class="stat-number" id="totalRequests">0</div>
+            <div class="stat-label">总请求数</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="successCount">0</div>
+            <div class="stat-label">成功生成</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="avgTime">0s</div>
+            <div class="stat-label">平均耗时</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="connectionTime">0s</div>
+            <div class="stat-label">连接时长</div>
+        </div>
+    </div>
+    
+    <div class="test-section">
+        <h3>📋 消息日志</h3>
+        <div id="messages"></div>
+        <div style="margin-top:10px">
+            <img id="previewImage" alt="图片预览" style="max-width: 100%; border: 1px solid #ddd; border-radius: 6px; display:none;" />
+        </div>
+        <button onclick="clearMessages()">🗑️ 清空日志</button>
+        <button onclick="exportLogs()">📄 导出日志</button>
+    <button onclick="showLocalSavedImage()">🖼️ 显示测试图片</button>
+    <button onclick="downloadCurrentImage()">💾 下载当前图片</button>
+    </div>
+    
+    <script>
+        let ws = null;
+        let connectionStartTime = null;
+        let stats = {
+            totalRequests: 0,
+            successCount: 0,
+            totalTime: 0,
+            startTime: null
+        };
+        
+        function addMessage(content, type = 'info') {
+            const messages = document.getElementById('messages');
+            const message = document.createElement('div');
+            message.className = `message ${type}`;
+            message.innerHTML = `<strong>${new Date().toLocaleTimeString()}</strong> ${content}`;
+            messages.appendChild(message);
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        function updateConnectionStatus(status, isConnected = false) {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.textContent = status;
+            statusEl.style.color = isConnected ? 'green' : 'red';
+        }
+        
+        function updateStats() {
+            document.getElementById('totalRequests').textContent = stats.totalRequests;
+            document.getElementById('successCount').textContent = stats.successCount;
+            document.getElementById('avgTime').textContent = stats.totalRequests > 0 ? 
+                Math.round(stats.totalTime / stats.totalRequests) + 's' : '0s';
+            
+            if (connectionStartTime) {
+                const elapsed = Math.floor((Date.now() - connectionStartTime) / 1000);
+                document.getElementById('connectionTime').textContent = elapsed + 's';
+            }
+        }
+        
+        function connectWebSocket() {
+            try {
+                // 使用localhost:8000，这是xiaozhi-server的WebSocket端口，添加必需的device-id和client-id参数
+                ws = new WebSocket('ws://localhost:8000/xiaozhi/v1/?device-id=test-device-001&client-id=web-test-client');
+                connectionStartTime = Date.now();
+                
+                ws.onopen = function(event) {
+                    updateConnectionStatus('🟢 已连接到智谱AI服务', true);
+                    addMessage('🎉 WebSocket连接成功! 已连接到xiaozhi-server', 'received');
+                    addMessage('📡 服务地址: ws://localhost:8000/xiaozhi/v1/?device-id=test-device-001&client-id=web-test-client', 'info');
+                    
+                    // 启动定时器更新连接时长
+                    setInterval(updateStats, 1000);
+                };
+                
+                ws.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        addMessage(`📥 收到消息: ${JSON.stringify(data, null, 2)}`, 'received');
+                        
+                        // 检查是否是图像生成状态更新
+                        if (data.type === 'image_generation_status') {
+                            const status = data.data?.status;
+                            const message = data.data?.message;
+                            
+                            if (status === 'generating') {
+                                addMessage(`🎨 ${message}`, 'info');
+                            } else if (status === 'success') {
+                                addMessage(`✅ ${message}`, 'received');
+                                stats.successCount++;
+                                updateStats();
+                            } else if (status === 'error') {
+                                addMessage(`❌ ${message}`, 'error');
+                            }
+                        }
+
+                        // 如果服务端直接下发图片
+                        if (data.type === 'image_display' && data.data?.image) {
+                            const imgEl = document.getElementById('previewImage');
+                            imgEl.style.display = 'block';
+                            // 默认按 JPEG 渲染；后端目前用 JPEG 编码
+                            imgEl.src = `data:image/jpeg;base64,${data.data.image}`;
+                            addMessage('🖼️ 已接收到并展示图片（image_display）', 'received');
+                        }
+                    } catch (e) {
+                        addMessage(`📥 收到原始消息: ${event.data}`, 'received');
+                    }
+                };
+                
+                ws.onclose = function(event) {
+                    updateConnectionStatus('🔴 连接已关闭', false);
+                    addMessage(`🔌 连接关闭: ${event.code} - ${event.reason || '正常关闭'}`, 'error');
+                    connectionStartTime = null;
+                };
+                
+                ws.onerror = function(error) {
+                    updateConnectionStatus('🔴 连接错误', false);
+                    addMessage(`❌ WebSocket错误: ${error}`, 'error');
+                };
+                
+            } catch (error) {
+                addMessage(`❌ 连接失败: ${error}`, 'error');
+            }
+        }
+        
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                connectionStartTime = null;
+            }
+        }
+        
+        function testConnection() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('❌ 请先连接WebSocket!', 'error');
+                return;
+            }
+            
+            // 使用服务器支持的消息类型：hello
+            const helloMessage = {
+                type: 'hello',
+                message: 'ping',
+                timestamp: Date.now()
+            };
+
+            ws.send(JSON.stringify(helloMessage));
+            addMessage(`📤 发送测试消息(hello): ${JSON.stringify(helloMessage)}`, 'sent');
+        }
+        
+        function generateImage() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('❌ 请先连接WebSocket!', 'error');
+                return;
+            }
+            
+            const prompt = document.getElementById('imagePrompt').value;
+            const style = document.getElementById('imageStyle').value;
+            const size = document.getElementById('imageSize').value;
+            
+            if (!prompt.trim()) {
+                addMessage('❌ 请输入图片描述!', 'error');
+                return;
+            }
+            
+            const startTime = Date.now();
+            stats.totalRequests++;
+            
+            // 向服务器发送 listen/detect JSON 消息，触发对话与函数调用
+            const text = `生成图片。提示词：${prompt}；风格：${style}；尺寸：${size}。`;
+            const payload = {
+                type: 'listen',
+                state: 'detect',
+                text
+            };
+
+            ws.send(JSON.stringify(payload));
+            addMessage(`📤 发送AI绘图请求(listen/detect):`, 'sent');
+            addMessage(`&nbsp;&nbsp;📝 请求内容: ${text}`, 'sent');
+            addMessage(`&nbsp;&nbsp;📦 载荷: ${JSON.stringify(payload)}`, 'sent');
+            
+            // 记录请求时间
+            setTimeout(() => {
+                const elapsed = Date.now() - startTime;
+                stats.totalTime += elapsed / 1000;
+                updateStats();
+            }, 100);
+            
+            // 禁用按钮防止重复点击
+            const btn = document.getElementById('generateBtn');
+            btn.disabled = true;
+            btn.textContent = '🎨 生成中...';
+            
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '🎨 生成图片';
+            }, 3000);
+        }
+        
+        function sendTextCommand() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('❌ 请先连接WebSocket!', 'error');
+                return;
+            }
+            
+            const prompt = document.getElementById('imagePrompt').value;
+            const text = `生成图片。提示词：${prompt}。`;
+            const payload = {
+                type: 'listen',
+                state: 'detect',
+                text
+            };
+
+            ws.send(JSON.stringify(payload));
+            addMessage(`📤 发送自然语言指令(listen/detect): ${text}`, 'sent');
+            addMessage(`&nbsp;&nbsp;📦 载荷: ${JSON.stringify(payload)}`, 'sent');
+        }
+        
+        function quickTest() {
+            const testPrompts = [
+                "一只橘色的小猫",
+                "美丽的日落",
+                "科幻城市"
+            ];
+            
+            const randomPrompt = testPrompts[Math.floor(Math.random() * testPrompts.length)];
+            document.getElementById('imagePrompt').value = randomPrompt;
+            document.getElementById('imageStyle').value = 'cartoon';
+            
+            addMessage(`🎲 随机测试: ${randomPrompt}`, 'info');
+            generateImage();
+        }
+        
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+            addMessage('🧹 日志已清空', 'info');
+        }
+        
+        function exportLogs() {
+            const messages = document.getElementById('messages').innerText;
+            const blob = new Blob([messages], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `xiaozhi-ai-logs-${new Date().toISOString().slice(0,10)}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+            addMessage('📄 日志已导出', 'info');
+        }
+        
+        // 页面加载时显示说明
+        window.onload = function() {
+            addMessage('🎯 智谱AI图像生成测试系统启动', 'info');
+            addMessage('📝 使用说明:', 'info');
+            addMessage('1. 点击"连接WebSocket"建立与服务器的连接', 'info');
+            addMessage('2. 输入图片描述，选择风格和尺寸', 'info');
+            addMessage('3. 点击"生成图片"开始AI图像生成', 'info');
+            addMessage('4. 观察消息日志中的状态更新', 'info');
+            addMessage('5. 生成的图片将自动发送到ESP32设备显示', 'info');
+            addMessage('🚀 系统已就绪，请开始测试!', 'info');
+        };
+        
+        // 定期更新统计
+        setInterval(updateStats, 1000);
+
+        // 显示已保存到静态站点的测试图片
+        function showLocalSavedImage() {
+            const imgEl = document.getElementById('previewImage');
+            imgEl.style.display = 'block';
+            // 通过静态站点直接访问我们拷进去的图片
+            imgEl.src = '/img/test_generated_image.jpg?ts=' + Date.now();
+            addMessage('🖼️ 已加载本地测试图片 /img/test_generated_image.jpg', 'info');
+        }
+
+        // 下载当前预览图（支持 base64 dataURL 或静态路径）
+        function downloadCurrentImage() {
+            const imgEl = document.getElementById('previewImage');
+            if (!imgEl || !imgEl.src) {
+                addMessage('❌ 没有可下载的图片', 'error');
+                return;
+            }
+            const a = document.createElement('a');
+            const now = new Date();
+            const ts = now.toISOString().replace(/[:.]/g, '-');
+            a.download = `generated-image-${ts}.jpg`;
+            // 如果是 dataURL 直接下载；如果是相对路径，拼绝对 URL
+            if (imgEl.src.startsWith('data:image')) {
+                a.href = imgEl.src;
+            } else {
+                const url = new URL(imgEl.src, window.location.origin);
+                a.href = url.toString();
+            }
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            addMessage('💾 已触发图片下载', 'info');
+        }
+    </script>
+</body>
+</html>

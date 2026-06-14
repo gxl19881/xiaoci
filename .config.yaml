@@ -1,0 +1,28 @@
+# 自定义配置文件 - 启用图像生成功能
+
+# 图片生成插件配置
+plugins:
+  generate_image:
+    # 使用智谱AI作为图片生成服务提供商
+    provider: "zhipu"
+    # 智谱AI API密钥
+    zhipu_api_key: "e514224a2f364e13aead80a39830a6bc.i8O8JPIJJAxPyAZd"
+    # 默认图片尺寸
+    default_size: "512x512"
+    # 默认图片风格
+    default_style: "cartoon"
+    # ESP32设备屏幕尺寸（用于图片压缩）
+    esp32_width: 240
+    esp32_height: 240
+
+# 意图识别配置
+Intent:
+  function_call:
+    type: function_call
+    # 完整的函数列表，包含generate_image
+    functions:
+      - change_role
+      - get_weather
+      - get_news_from_newsnow
+      - play_music
+      - generate_image

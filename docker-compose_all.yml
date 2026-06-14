@@ -1,0 +1,138 @@
+# Docker安装全模块
+
+version: '3'
+services:
+  # Server模块
+  xiaozhi-esp32-server:
+    image: ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:server_latest
+    container_name: xiaozhi-esp32-server-K10
+    depends_on:
+      - xiaozhi-esp32-server-db
+      - xiaozhi-esp32-server-redis
+    restart: always
+    networks:
+      - default
+    ports:
+      # ws服务端
+      - "9000:8000"
+      # http服务的端口，用于视觉分析接口
+      - "9003:8003"
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # 配置文件目录
+      - ./data:/opt/xiaozhi-esp32-server/data
+      # 挂载配置加载器，确保与本地代码同步
+      - ./config/config_loader.py:/opt/xiaozhi-esp32-server/config/config_loader.py
+      - ./config/manage_api_client.py:/opt/xiaozhi-esp32-server/config/manage_api_client.py
+      # 挂载核心代码文件(只挂载修改过的文件，避免覆盖容器内的新版文件)
+      - ./core/websocket_server.py:/opt/xiaozhi-esp32-server/core/websocket_server.py
+      - ./core/providers/vad/silero.py:/opt/xiaozhi-esp32-server/core/providers/vad/silero.py
+      - ./core/providers/tts/doubao.py:/opt/xiaozhi-esp32-server/core/providers/tts/doubao.py
+      # 修复图片生成相关文件
+      - ./agent-base-prompt.txt:/opt/xiaozhi-esp32-server/agent-base-prompt.txt
+      - ./core/providers/image_generation/zhipu_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/zhipu_provider.py
+      - ./core/providers/image_generation/manager.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/manager.py
+      - ./core/providers/image_generation/__init__.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/__init__.py
+      # 修复摄像头误调用问题
+      - ./core/providers/tools/device_mcp/mcp_handler.py:/opt/xiaozhi-esp32-server/core/providers/tools/device_mcp/mcp_handler.py
+      - ./core/providers/tools/device_mcp/mcp_executor.py:/opt/xiaozhi-esp32-server/core/providers/tools/device_mcp/mcp_executor.py
+      # 模型文件挂接，很重要
+      - ./models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt
+      # 用户管理后台相关文件
+      - ./core/http_server.py:/opt/xiaozhi-esp32-server/core/http_server.py
+      - ./core/utils/db_manager.py:/opt/xiaozhi-esp32-server/core/utils/db_manager.py
+      - ./core/api/user_handler.py:/opt/xiaozhi-esp32-server/core/api/user_handler.py
+      - ./core/web/admin_ui.py:/opt/xiaozhi-esp32-server/core/web/admin_ui.py
+      # 补充缺失的依赖文件
+      - ./core/api/asr_http_handler.py:/opt/xiaozhi-esp32-server/core/api/asr_http_handler.py
+      - ./core/web/ui.py:/opt/xiaozhi-esp32-server/core/web/ui.py
+      - ./core/api/vision_handler.py:/opt/xiaozhi-esp32-server/core/api/vision_handler.py
+      - ./core/api/ota_handler.py:/opt/xiaozhi-esp32-server/core/api/ota_handler.py
+      - ./core/conn_registry.py:/opt/xiaozhi-esp32-server/core/conn_registry.py
+      - ./core/providers/image_generation/base.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/base.py
+      - ./core/auth.py:/opt/xiaozhi-esp32-server/core/auth.py
+      - ./core/connection.py:/opt/xiaozhi-esp32-server/core/connection.py
+      - ./plugins_func/functions/generate_image.py:/opt/xiaozhi-esp32-server/plugins_func/functions/generate_image.py
+      - ./core/providers/image_generation/openai_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/openai_provider.py
+      - ./core/providers/image_generation/stable_diffusion_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/stable_diffusion_provider.py
+      - ./core/providers/image_generation/tongyi_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/tongyi_provider.py
+      - ./core/handle/imageHandle.py:/opt/xiaozhi-esp32-server/core/handle/imageHandle.py
+      - ./core/providers/image_generation/openai_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/openai_provider.py
+      - ./core/providers/image_generation/stable_diffusion_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/stable_diffusion_provider.py
+      - ./core/providers/image_generation/tongyi_provider.py:/opt/xiaozhi-esp32-server/core/providers/image_generation/tongyi_provider.py
+      - ./core/utils/monitor.py:/opt/xiaozhi-esp32-server/core/utils/monitor.py
+      - ./core/utils/student_id_store.py:/opt/xiaozhi-esp32-server/core/utils/student_id_store.py
+      - ./core/utils/vllm.py:/opt/xiaozhi-esp32-server/core/utils/vllm.py
+      - ./core/utils/auth.py:/opt/xiaozhi-esp32-server/core/utils/auth.py
+      - ./core/utils/util.py:/opt/xiaozhi-esp32-server/core/utils/util.py
+      - ./core/utils/modules_initialize.py:/opt/xiaozhi-esp32-server/core/utils/modules_initialize.py
+      - ./plugins_func/register.py:/opt/xiaozhi-esp32-server/plugins_func/register.py
+      # 挂载 vllm provider 目录
+      - ./core/providers/vllm:/opt/xiaozhi-esp32-server/core/providers/vllm
+
+  # manager-api和manager-web模块
+  xiaozhi-esp32-server-web:
+    image: ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:web_latest
+    container_name: xiaozhi-esp32-server-web-K10
+    restart: always
+    networks:
+      - default
+    depends_on:
+      xiaozhi-esp32-server-db:
+        condition: service_healthy
+      xiaozhi-esp32-server-redis:
+        condition: service_healthy
+    ports:
+      # 智控台
+      - "9002:8002"
+    environment:
+      - TZ=Asia/Shanghai
+      - SPRING_DATASOURCE_DRUID_URL=jdbc:mysql://xiaozhi-esp32-server-db:3306/xiaozhi_esp32_server?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true&connectTimeout=30000&socketTimeout=30000&autoReconnect=true&failOverReadOnly=false&maxReconnects=10
+      - SPRING_DATASOURCE_DRUID_USERNAME=root
+      - SPRING_DATASOURCE_DRUID_PASSWORD=123456
+      - SPRING_DATA_REDIS_HOST=xiaozhi-esp32-server-redis
+      - SPRING_DATA_REDIS_PASSWORD=
+      - SPRING_DATA_REDIS_PORT=6379
+    volumes:
+      # 配置文件目录
+      - ./uploadfile:/uploadfile
+  # 数据库模块
+  xiaozhi-esp32-server-db:
+    image: mysql:latest
+    container_name: xiaozhi-esp32-server-db-K10
+    healthcheck:
+      test: [ "CMD", "mysqladmin" ,"ping", "-h", "localhost" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: always
+    networks:
+      - default
+    expose:
+      - 3306
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+    environment:
+      - TZ=Asia/Shanghai
+      - MYSQL_ROOT_PASSWORD=123456
+      - MYSQL_DATABASE=xiaozhi_esp32_server
+      - MYSQL_INITDB_ARGS="--character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci"
+  # redis模块
+  xiaozhi-esp32-server-redis:
+    image: redis
+    expose:
+      - 6379
+    container_name: xiaozhi-esp32-server-redis-K10
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - default
+networks:
+  default:

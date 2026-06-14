@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>简单WebSocket测试</title>
+    <meta charset="UTF-8">
+</head>
+<body>
+    <h1>简单WebSocket连接测试</h1>
+    <div id="status">状态: 未连接</div>
+    <button onclick="connect()">连接</button>
+    <button onclick="disconnect()">断开</button>
+    <button onclick="send()">发送测试消息</button>
+    <div id="messages" style="border: 1px solid #ccc; height: 300px; overflow-y: auto; margin-top: 10px; padding: 10px;">
+    </div>
+
+    <script>
+        let ws = null;
+        
+        function updateStatus(message) {
+            document.getElementById('status').innerText = '状态: ' + message;
+            console.log(message);
+        }
+        
+        function addMessage(message) {
+            const div = document.createElement('div');
+            div.innerHTML = new Date().toLocaleTimeString() + ' - ' + message;
+            document.getElementById('messages').appendChild(div);
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+        }
+        
+        function connect() {
+            try {
+                // 尝试连接到WebSocket服务器，添加必需的device-id和client-id参数
+                ws = new WebSocket('ws://localhost:8000/xiaozhi/v1/?device-id=test-device-001&client-id=web-test-client');
+                
+                ws.onopen = function(event) {
+                    updateStatus('已连接');
+                    addMessage('✅ WebSocket连接成功');
+                };
+                
+                ws.onmessage = function(event) {
+                    addMessage('📥 收到消息: ' + event.data);
+                };
+                
+                ws.onclose = function(event) {
+                    updateStatus('连接已关闭 (代码: ' + event.code + ')');
+                    addMessage('❌ 连接关闭: ' + event.code + ' - ' + (event.reason || '无原因'));
+                };
+                
+                ws.onerror = function(error) {
+                    updateStatus('连接错误');
+                    addMessage('❌ WebSocket错误: ' + error);
+                };
+                
+            } catch (error) {
+                updateStatus('连接失败');
+                addMessage('❌ 连接异常: ' + error);
+            }
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+        
+        function send() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = {
+                    type: 'test',
+                    content: 'Hello WebSocket',
+                    timestamp: Date.now()
+                };
+                ws.send(JSON.stringify(message));
+                addMessage('📤 发送消息: ' + JSON.stringify(message));
+            } else {
+                addMessage('❌ WebSocket未连接，无法发送消息');
+            }
+        }
+        
+        // 页面加载时自动连接
+        window.onload = function() {
+            addMessage('🚀 页面加载完成，准备测试WebSocket连接');
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,1342 @@
+﻿import os
+import sys
+import copy
+import json
+import uuid
+import time
+import queue
+import asyncio
+import threading
+import traceback
+import subprocess
+import websockets
+from core.utils.util import (
+    extract_json_from_string,
+    check_vad_update,
+    check_asr_update,
+    filter_sensitive_info,
+)
+from typing import Dict, Any
+from collections import deque
+from core.utils.modules_initialize import (
+    initialize_modules,
+    initialize_tts,
+    initialize_asr,
+)
+from core.handle.reportHandle import report
+from core.providers.tts.default import DefaultTTS
+from concurrent.futures import ThreadPoolExecutor
+from core.utils.dialogue import Message, Dialogue
+from core.providers.asr.dto.dto import InterfaceType
+from core.handle.textHandle import handleTextMessage
+from core.providers.tools.unified_tool_handler import UnifiedToolHandler
+from plugins_func.loadplugins import auto_import_modules
+from plugins_func.register import Action, ActionResponse
+from core.auth import AuthMiddleware, AuthenticationError
+from config.config_loader import get_private_config_from_api
+from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+from config.logger import setup_logging, build_module_string, create_connection_logger
+from config.manage_api_client import DeviceNotFoundException, DeviceBindException
+from core.utils.prompt_manager import PromptManager
+from core.utils.voiceprint_provider import VoiceprintProvider
+from core.utils import textUtils
+
+TAG = __name__
+
+auto_import_modules("plugins_func.functions")
+
+
+class TTSException(RuntimeError):
+    pass
+
+
+class ConnectionHandler:
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        _vad,
+        _asr,
+        _llm,
+        _memory,
+        _intent,
+        server=None,
+    ):
+        self.common_config = config
+        self.config = copy.deepcopy(config)
+        self.session_id = str(uuid.uuid4())
+        self.logger = setup_logging()
+        self.server = server  # 淇濆瓨server瀹炰緥鐨勫紩鐢?
+        self.auth = AuthMiddleware(config)
+        self.need_bind = False
+        self.bind_code = None
+        self.read_config_from_api = self.config.get("read_config_from_api", False)
+
+        self.websocket = None
+        self.headers = None
+        self.device_id = None
+        self.client_ip = None
+        self.student_id = None
+        self.prompt = None
+        self.welcome_msg = None
+        self.max_output_size = 0
+        self.chat_history_conf = 0
+        self.audio_format = "opus"
+        # PCM绔簭锛氶粯璁や笉鎸囧畾(None)锛屽瀹㈡埛绔湭澹版槑鍒欏湪ASR闃舵鑷姩妫€娴嬶紱濡傚０鏄庡垯浣跨敤 'le' 鎴?'be'
+        self.pcm_endian = None
+        # PCM缂栫爜锛?s16' (榛樿) 鎴?'u16'锛汵one 琛ㄧず鏈０鏄庯紝鐢盇SR闃舵灏濊瘯鑷姩璇嗗埆/淇濇寔榛樿
+        self.pcm_encoding = None
+        # ASR璇█鍋忓ソ锛堜緥濡?'zh'/'en'/'yue'锛夛紝鑻ヤ负绌哄垯鐢辨彁渚涜€呰嚜鍔ㄦ娴?        self.asr_language = None
+
+        # 瀹㈡埛绔姸鎬佺浉鍏?        self.client_abort = False
+        self.client_is_speaking = False
+        self.client_listen_mode = "auto"
+        # 鐩戝惉闈欓煶瀹堟姢浠诲姟寮曠敤涓庢渶鍚庝竴甯ф椂闂存埑锛堟绉掞級
+        self.listen_silence_task = None
+        self.last_audio_frame_time = 0.0
+
+        # 绾跨▼浠诲姟鐩稿叧
+        self.loop = asyncio.get_event_loop()
+        self.stop_event = threading.Event()
+        self.executor = ThreadPoolExecutor(max_workers=5)
+
+        # 娣诲姞涓婃姤绾跨▼姹?        self.report_queue = queue.Queue()
+        self.report_thread = None
+        # 鏈潵鍙互閫氳繃淇敼姝ゅ锛岃皟鑺俛sr鐨勪笂鎶ュ拰tts鐨勪笂鎶ワ紝鐩墠榛樿閮藉紑鍚?        self.report_asr_enable = self.read_config_from_api
+        self.report_tts_enable = self.read_config_from_api
+
+        # 渚濊禆鐨勭粍浠?        self.vad = None
+        self.asr = None
+        self.tts = None
+        self._asr = _asr
+        self._vad = _vad
+        self.llm = _llm
+        self.memory = _memory
+        self.intent = _intent
+
+        # 涓烘瘡涓繛鎺ュ崟鐙鐞嗗０绾硅瘑鍒?        self.voiceprint_provider = None
+
+        # vad鐩稿叧鍙橀噺
+        self.client_audio_buffer = bytearray()
+        self.client_have_voice = False
+        self.last_activity_time = 0.0  # 缁熶竴鐨勬椿鍔ㄦ椂闂存埑锛堟绉掞級
+        self.client_voice_stop = False
+        self.client_voice_window = deque(maxlen=5)
+        self.last_is_voice = False
+
+        # asr鐩稿叧鍙橀噺
+        # 鍥犱负瀹為檯閮ㄧ讲鏃跺彲鑳戒細鐢ㄥ埌鍏叡鐨勬湰鍦癆SR锛屼笉鑳芥妸鍙橀噺鏆撮湶缁欏叕鍏盇SR
+        # 鎵€浠ユ秹鍙婂埌ASR鐨勫彉閲忥紝闇€瑕佸湪杩欓噷瀹氫箟锛屽睘浜巆onnection鐨勭鏈夊彉閲?        self.asr_audio = []
+        self.asr_audio_queue = queue.Queue()
+
+        # llm鐩稿叧鍙橀噺
+        self.llm_finish_task = True
+        self.dialogue = Dialogue()
+
+        # tts鐩稿叧鍙橀噺
+        self.sentence_id = None
+        # 澶勭悊TTS鍝嶅簲娌℃湁鏂囨湰杩斿洖
+        self.tts_MessageText = ""
+
+        # iot鐩稿叧鍙橀噺
+        self.iot_descriptors = {}
+        self.func_handler = None
+
+        self.cmd_exit = self.config["exit_commands"]
+
+        # 鏄惁鍦ㄨ亰澶╃粨鏉熷悗鍏抽棴杩炴帴
+        self.close_after_chat = False
+        self.load_function_plugin = False
+        self.intent_type = "nointent"
+
+        self.timeout_seconds = (
+            int(self.config.get("close_connection_no_voice_time", 120)) + 60
+        )  # 鍦ㄥ師鏉ョ涓€閬撳叧闂殑鍩虹涓婂姞60绉掞紝杩涜浜岄亾鍏抽棴
+        self.timeout_task = None
+
+        # {"mcp":true} 琛ㄧず鍚敤MCP鍔熻兘
+        self.features = None
+
+        # 鏍囪杩炴帴鏄惁鏉ヨ嚜MQTT
+        self.conn_from_mqtt_gateway = False
+
+        # 鍒濆鍖栨彁绀鸿瘝绠＄悊鍣?        self.prompt_manager = PromptManager(config, self.logger)
+        # 鏁版嵁鏍圭洰褰曪紙涓?WebUI 涓€鑷达紝鍐欏叆 data/ 涓嬶級
+        try:
+            self._data_root = os.path.abspath(os.path.join(os.getcwd(), "data"))
+        except Exception:
+            self._data_root = os.path.abspath("data")
+        # 瑙嗚缁撴灉鍘婚噸缂撳瓨锛堢敤浜嶩TTP妗ユ帴鐨勫閿欏洖浼狅級
+        self._seen_vision_ids = set()
+
+        # 宸ュ叿杩愯鐘舵€佹爣璁帮紙鐢ㄤ簬鏆傚仠绌洪棽瓒呮椂锛?        self._tool_running = False
+
+        # WebSocket杩愯鐘舵€佷笌淇濇椿浠诲姟
+        self.ws_open = False
+        self._ping_keepalive_task = None
+        # 瑙嗚/宸ュ叿鎵ц鐘舵€侊紙鐢ㄤ簬灞忚斀绌洪棽瓒呮椂锛?        self._vision_inflight = False
+        # 鏂板锛氳瑙変繚娲讳换鍔″紩鐢?        self._vision_keepalive_task = None
+
+    def mark_active(self):
+        """鍒锋柊杩炴帴鐨勬渶鍚庢椿璺冩椂闂达紙姣锛夈€傚湪涓嬭鏂囨湰/闊抽銆佷繚娲绘垨宸ュ叿鎵ц鏈熼棿璋冪敤銆?""
+        try:
+            self.last_activity_time = time.time() * 1000
+        except Exception:
+            pass
+
+    async def _try_replay_recent_vision_result(self, window_seconds: int = 60):
+        """鍦ㄦ柊杩炴帴寤虹珛鍚庯紝鐭獥鍥炴斁鏈€杩戠殑瑙嗚缁撴灉锛岄伩鍏嶆媿鐓х粨鏉熶絾涓婃杩炴帴宸叉柇寮€鏃朵涪鎾€?
+        绛栫暐锛?        - 鍦?data/vision_records/YYYYMMDD 涓嬶紝鏌ユ壘鍖呭惈褰撳墠 client-id 鍓?浣嶇殑鏈€杩?.json锛?        - 浠呭洖鏀句慨鏀规椂闂村湪 window_seconds 鍐呯殑缁撴灉锛?        - 鏂囨湰鍏堣繘琛?sanitize锛屽啀鐩存帴TTS鎾姤锛屽苟鍔犲叆褰撳墠浼氳瘽瀵硅瘽璁板綍銆?        """
+        try:
+            cid = (self.headers.get("client-id", "") or "")[:8]
+            if not cid:
+                return
+            from datetime import datetime, timedelta
+            base = os.path.abspath(os.path.join(os.getcwd(), "data", "vision_records"))
+            day_dir = os.path.join(base, datetime.now().strftime("%Y%m%d"))
+            if not os.path.isdir(day_dir):
+                return
+            now = datetime.now()
+            candidates = [
+                f for f in os.listdir(day_dir) if f.endswith(".json") and cid in f
+            ]
+            if not candidates:
+                return
+            # 鍙栨渶杩戠殑鍑犱釜鏂囦欢妫€鏌ユ椂闂寸獥
+            candidates.sort(
+                key=lambda fn: os.path.getmtime(os.path.join(day_dir, fn)),
+                reverse=True,
+            )
+            for fn in candidates[:5]:
+                p = os.path.join(day_dir, fn)
+                mtime = datetime.fromtimestamp(os.path.getmtime(p))
+                if (now - mtime).total_seconds() > window_seconds:
+                    continue
+                try:
+                    import json as _json
+                    with open(p, "r", encoding="utf-8") as jf:
+                        data = _json.load(jf)
+                    if isinstance(data, dict) and data.get("success") is True and data.get("action") == "RESPONSE":
+                        text = data.get("response") or ""
+                        if not text:
+                            continue
+                        try:
+                            from core.utils import textUtils as _txu
+                            text = _txu.sanitize_for_device(text)
+                        except Exception:
+                            pass
+                        # 鐩存帴杩涜鍒嗘鎾姤锛屾槑纭?FIRST/MIDDLE/LAST锛岄伩鍏嶈澶囩鍙ョ晫涓嶅畬鏁?                        self._speak_vision_response(text)
+                        # 鍚屾鍐欏叆瀵硅瘽
+                        self.dialogue.put(Message(role="assistant", content=text))
+                        try:
+                            self._append_conversation_event(question=self._get_last_user_content(), reply=text, source="realtime")
+                        except Exception:
+                            pass
+                        self.logger.bind(tag=TAG).info("閲嶈繛鍚庡洖鏀炬渶杩戣瑙夌粨鏋滃畬鎴?)
+                        # 鍒锋柊娲诲姩鏃堕棿锛岄槻姝㈢揣鎺ョ潃琚秴鏃舵竻鐞?                        self.last_activity_time = time.time() * 1000
+                        return
+                except Exception:
+                    continue
+        except Exception as _e:
+            try:
+                self.logger.bind(tag=TAG).warning(f"閲嶈繛瑙嗚缁撴灉鍥炴斁澶辫触: {_e}")
+            except Exception:
+                pass
+
+    def _append_conversation_event(self, question: str, reply: str, files=None, source: str = "realtime"):
+        """灏嗕竴杞璇濆啓鍏?data/conversations/YYYYMMDD/<session_id>.jsonl
+        - conversation_id 閲囩敤褰撳墠杩炴帴鐨?session_id锛堝悓涓€杩炴帴鍐呭綊妗ｅ埌鍚屼竴鏂囦欢锛?        - 瀛﹀彿鏉ヨ嚜鎻℃墜澶翠繚瀛樼殑 self.student_id锛堝鏋滄病鏈夊垯涓虹┖瀛楃涓诧級
+        """
+        try:
+            from datetime import datetime as _dt
+            import json as _json
+            # 瀛樻。鍓嶅噣鍖栨枃鏈紝鍘婚櫎 Markdown/LaTeX/鐗规畩绗﹀彿锛屼繚璇佹煡鐪嬩笌璁惧涓€鑷?            try:
+                from core.utils import textUtils as _txu
+                _q = _txu.sanitize_for_device(question or "")
+                _r = _txu.sanitize_for_device(reply or "")
+            except Exception:
+                _q = question or ""
+                _r = reply or ""
+            now = _dt.now()
+            date_str = now.strftime("%Y%m%d")
+            out_dir = os.path.join(self._data_root, "conversations", date_str)
+            os.makedirs(out_dir, exist_ok=True)
+            cid = (self.session_id or _dt.now().strftime("%H%M%S"))
+            line = {
+                "timestamp": now.isoformat(timespec="seconds"),
+                "source": source or "realtime",
+                "student_id": (self.student_id or ""),
+                "question": _q,
+                "reply": _r,
+                "files": [f for f in (files or []) if f],
+            }
+            with open(os.path.join(out_dir, f"{cid}.jsonl"), "a", encoding="utf-8") as f:
+                f.write(_json.dumps(line, ensure_ascii=False) + "\n")
+        except Exception as _e:
+            try:
+                self.logger.bind(tag=TAG).warning(f"淇濆瓨瀵硅瘽璁板綍澶辫触: {_e}")
+            except Exception:
+                pass
+
+    def _get_last_user_content(self) -> str:
+        try:
+            for m in reversed(self.dialogue.dialogue):
+                if getattr(m, "role", None) == "user" and getattr(m, "content", None):
+                    return m.content
+        except Exception:
+            pass
+        return ""
+
+    async def handle_connection(self, ws):
+        try:
+            # 鑾峰彇骞堕獙璇乭eaders
+            self.headers = dict(ws.request.headers)
+
+            if self.headers.get("device-id", None) is None:
+                # 灏濊瘯浠?URL 鐨勬煡璇㈠弬鏁颁腑鑾峰彇 device-id
+                from urllib.parse import parse_qs, urlparse
+
+                # 浠?WebSocket 璇锋眰涓幏鍙栬矾寰?                request_path = ws.request.path
+                if not request_path:
+                    self.logger.bind(tag=TAG).error("鏃犳硶鑾峰彇璇锋眰璺緞")
+                    return
+                parsed_url = urlparse(request_path)
+                query_params = parse_qs(parsed_url.query)
+                if "device-id" in query_params:
+                    self.headers["device-id"] = query_params["device-id"][0]
+                    self.headers["client-id"] = query_params["client-id"][0]
+                else:
+                    await ws.send("绔彛姝ｅ父锛屽闇€娴嬭瘯杩炴帴锛岃浣跨敤test_page.html")
+                    await self.close(ws)
+                    return
+            real_ip = self.headers.get("x-real-ip") or self.headers.get(
+                "x-forwarded-for"
+            )
+            if real_ip:
+                self.client_ip = real_ip.split(",")[0].strip()
+            else:
+                self.client_ip = ws.remote_address[0]
+            self.logger.bind(tag=TAG).info(
+                f"{self.client_ip} conn - Headers: {self.headers}"
+            )
+
+            # 鎻愬彇骞惰褰曞鍙凤紙鑻ュ鎴风鍦ㄦ彙鎵嬪ご涓紶閫掍簡 Student-Id锛?            try:
+                sid_header = (
+                    self.headers.get("Student-Id")
+                    or self.headers.get("student-id")
+                    or self.headers.get("student_id")
+                )
+                if sid_header:
+                    self.student_id = str(sid_header).strip()
+                    self.logger.bind(tag=TAG).info(
+                        f"鎻愬彇鍒板鍙?鏉ヨ嚜Header): {self.student_id}"
+                    )
+                else:
+                    self.logger.bind(tag=TAG).info("鏈湪Header涓彂鐜板鍙?Student-Id)")
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(
+                    f"瑙ｆ瀽Header涓璖tudent-Id寮傚父: {_e}"
+                )
+
+            # 灏濊瘯浠?Header 鎴?URL 鏌ヨ鍙傛暟涓彁鍙栭煶棰戞牸寮忥紝浼樺厛绾э細Header > Query
+            try:
+                audio_fmt_header = (
+                    self.headers.get("Audio-Format")
+                    or self.headers.get("audio-format")
+                    or self.headers.get("audio_format")
+                )
+                fmt_from_header = (
+                    str(audio_fmt_header).strip().lower() if audio_fmt_header else None
+                )
+
+                # 瑙ｆ瀽鏌ヨ鍙傛暟锛堝缁堣В鏋愶紝浠ヤ究鑾峰彇 audio_format锛?                from urllib.parse import parse_qs, urlparse
+
+                parsed_url_all = urlparse(ws.request.path or "")
+                query_params_all = parse_qs(parsed_url_all.query)
+                fmt_from_query = None
+                if "audio_format" in query_params_all:
+                    fmt_from_query = (
+                        query_params_all.get("audio_format", [None])[0] or ""
+                    ).strip().lower()
+
+                final_fmt = fmt_from_header or fmt_from_query
+                if final_fmt in ("pcm", "opus"):
+                    self.audio_format = final_fmt
+                    self.logger.bind(tag=TAG).info(
+                        f"闊抽鏍煎紡璁惧畾: {self.audio_format} (鏉ユ簮: {'Header' if fmt_from_header else 'Query'})"
+                    )
+                elif final_fmt:
+                    self.logger.bind(tag=TAG).warning(
+                        f"鏀跺埌鏈煡闊抽鏍煎紡: {final_fmt}锛屼繚鎸侀粯璁? {self.audio_format}"
+                    )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"瑙ｆ瀽闊抽鏍煎紡澶辫触: {_e}")
+
+            # 瑙ｆ瀽PCM绔簭锛屽彲閫夊ご锛歅CM-Endian/pcm-endian/pcm_endian锛屽€间负 le 鎴?be
+            try:
+                endian_header = (
+                    self.headers.get("PCM-Endian")
+                    or self.headers.get("pcm-endian")
+                    or self.headers.get("pcm_endian")
+                )
+                if endian_header:
+                    endian = str(endian_header).strip().lower()
+                    if endian in ("le", "be"):
+                        self.pcm_endian = endian
+                        self.logger.bind(tag=TAG).info(
+                            f"PCM绔簭璁惧畾: {self.pcm_endian} (鏉ユ簮: Header)"
+                        )
+                    else:
+                        self.logger.bind(tag=TAG).warning(
+                            f"鏀跺埌鏈煡PCM绔簭: {endian}锛屼繚鎸侀粯璁? {self.pcm_endian}"
+                        )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"瑙ｆ瀽PCM绔簭澶辫触: {_e}")
+
+            # 瑙ｆ瀽PCM缂栫爜锛屽彲閫夊ご锛歅CM-Encoding/pcm-encoding/pcm_encoding锛屽€间负 s16 鎴?u16
+            try:
+                enc_header = (
+                    self.headers.get("PCM-Encoding")
+                    or self.headers.get("pcm-encoding")
+                    or self.headers.get("pcm_encoding")
+                )
+                if enc_header:
+                    enc = str(enc_header).strip().lower()
+                    if enc in ("s16", "u16"):
+                        self.pcm_encoding = enc
+                        self.logger.bind(tag=TAG).info(
+                            f"PCM缂栫爜璁惧畾: {self.pcm_encoding} (鏉ユ簮: Header)"
+                        )
+                    else:
+                        self.logger.bind(tag=TAG).warning(
+                            f"鏀跺埌鏈煡PCM缂栫爜: {enc}锛屼繚鎸侀粯璁? {self.pcm_encoding}"
+                        )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"瑙ｆ瀽PCM缂栫爜澶辫触: {_e}")
+
+            # 瑙ｆ瀽ASR璇█瑕嗙洊锛屽彲閫夊ご锛欰SR-Language/asr-language/asr_language锛堜緥濡?zh/en/yue锛?            try:
+                asr_lang_header = (
+                    self.headers.get("ASR-Language")
+                    or self.headers.get("asr-language")
+                    or self.headers.get("asr_language")
+                )
+                if asr_lang_header:
+                    lang = str(asr_lang_header).strip().lower()
+                    # 绠€鍗曟牎楠岋紙鍏佽瀛楁瘝鍜岃繛瀛楃锛?                    if all(c.isalpha() or c in ("-", "_") for c in lang):
+                        self.asr_language = lang
+                        self.logger.bind(tag=TAG).info(
+                            f"ASR璇█鍋忓ソ: {self.asr_language} (鏉ユ簮: Header)"
+                        )
+                    else:
+                        self.logger.bind(tag=TAG).warning(
+                            f"鏀跺埌闈炴硶ASR璇█鏍囪: {lang}锛屽凡蹇界暐"
+                        )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"瑙ｆ瀽ASR璇█澶辫触: {_e}")
+
+            # 杩涜璁よ瘉
+            await self.auth.authenticate(self.headers)
+
+            # 璁よ瘉閫氳繃,缁х画澶勭悊
+            self.websocket = ws
+            self.ws_open = True
+            self.device_id = self.headers.get("device-id", None)
+
+            # 妫€鏌ユ槸鍚︽潵鑷狹QTT杩炴帴
+            request_path = ws.request.path
+            self.conn_from_mqtt_gateway = request_path.endswith("?from=mqtt_gateway")
+            if self.conn_from_mqtt_gateway:
+                self.logger.bind(tag=TAG).info("杩炴帴鏉ヨ嚜:MQTT缃戝叧")
+
+            # 鍒濆鍖栨椿鍔ㄦ椂闂存埑
+            self.last_activity_time = time.time() * 1000
+
+            # 鍚姩瓒呮椂妫€鏌ヤ换鍔?            self.timeout_task = asyncio.create_task(self._check_timeout())
+            # 鍚姩Ping淇濇椿浠诲姟锛屽噺灏戜腑闂寸綉缁?NAT闂茬疆鏂紑
+            try:
+                self._ping_keepalive_task = asyncio.create_task(self._ping_keepalive())
+            except Exception:
+                self._ping_keepalive_task = None
+            # 鍒濆鍗虫爣璁版椿璺冿紝閬垮厤鎻℃墜鍚庣煭鏃堕棿琚竻鐞?            self.mark_active()
+
+            # 灏濊瘯鐭獥鍥炴斁鏈€杩戣瑙夌粨鏋滐紙寮傛瑙﹀彂锛岄伩鍏嶉樆濉炴彙鎵嬪悗娴佺▼锛?            try:
+                asyncio.create_task(self._try_replay_recent_vision_result())
+            except Exception:
+                pass
+
+            self.welcome_msg = self.config["xiaozhi"]
+            self.welcome_msg["session_id"] = self.session_id
+
+            # 鑾峰彇宸紓鍖栭厤缃?            self._initialize_private_config()
+            # 寮傛鍒濆鍖?            self.executor.submit(self._initialize_components)
+
+            try:
+                async for message in self.websocket:
+                    await self._route_message(message)
+            except websockets.exceptions.ConnectionClosed:
+                self.logger.bind(tag=TAG).info("瀹㈡埛绔柇寮€杩炴帴")
+
+        except AuthenticationError as e:
+            self.logger.bind(tag=TAG).error(f"Authentication failed: {str(e)}")
+            return
+        except Exception as e:
+            stack_trace = traceback.format_exc()
+            self.logger.bind(tag=TAG).error(f"Connection error: {str(e)}-{stack_trace}")
+            return
+        finally:
+            # 鏍囪WS鍏抽棴
+            try:
+                self.ws_open = False
+            except Exception:
+                pass
+            try:
+                await self._save_and_close(ws)
+            except Exception as final_error:
+                self.logger.bind(tag=TAG).error(f"鏈€缁堟竻鐞嗘椂鍑洪敊: {final_error}")
+                # 纭繚鍗充娇淇濆瓨璁板繂澶辫触锛屼篃瑕佸叧闂繛鎺?                try:
+                    await self.close(ws)
+                except Exception as close_error:
+                    self.logger.bind(tag=TAG).error(
+                        f"寮哄埗鍏抽棴杩炴帴鏃跺嚭閿? {close_error}"
+                    )
+
+    async def _save_and_close(self, ws):
+        """淇濆瓨璁板繂骞跺叧闂繛鎺?""
+        try:
+            if self.memory:
+                # 浣跨敤绾跨▼姹犲紓姝ヤ繚瀛樿蹇?                def save_memory_task():
+                    try:
+                        # 鍒涘缓鏂颁簨浠跺惊鐜紙閬垮厤涓庝富寰幆鍐茬獊锛?                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(
+                            self.memory.save_memory(self.dialogue.dialogue)
+                        )
+                    except Exception as e:
+                        self.logger.bind(tag=TAG).error(f"淇濆瓨璁板繂澶辫触: {e}")
+                    finally:
+                        try:
+                            loop.close()
+                        except Exception:
+                            pass
+
+                # 鍚姩绾跨▼淇濆瓨璁板繂锛屼笉绛夊緟瀹屾垚
+                threading.Thread(target=save_memory_task, daemon=True).start()
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"淇濆瓨璁板繂澶辫触: {e}")
+        finally:
+            # 绔嬪嵆鍏抽棴杩炴帴锛屼笉绛夊緟璁板繂淇濆瓨瀹屾垚
+            try:
+                await self.close(ws)
+            except Exception as close_error:
+                self.logger.bind(tag=TAG).error(
+                    f"淇濆瓨璁板繂鍚庡叧闂繛鎺ュけ璐? {close_error}"
+                )
+
+    async def _route_message(self, message):
+        """娑堟伅璺敱"""
+        if isinstance(message, str):
+            # 鏀跺埌娑堟伅鍗宠涓烘椿璺?            self.mark_active()
+            await handleTextMessage(self, message)
+        elif isinstance(message, bytes):
+            if self.vad is None or self.asr is None:
+                return
+
+            # 澶勭悊鏉ヨ嚜MQTT缃戝叧鐨勯煶棰戝寘
+            if self.conn_from_mqtt_gateway and len(message) >= 16:
+                handled = await self._process_mqtt_audio_message(message)
+                if handled:
+                    self.mark_active()
+                    return
+
+            # 涓嶉渶瑕佸ご閮ㄥ鐞嗘垨娌℃湁澶撮儴鏃讹紝鐩存帴澶勭悊鍘熷娑堟伅
+            self.asr_audio_queue.put(message)
+            # 鏇存柊鏈€鍚庢敹鍒伴煶棰戝抚鏃堕棿锛堢敤浜庨潤闊冲垽瀹氾級
+            try:
+                self.last_audio_frame_time = time.time() * 1000
+            except Exception:
+                pass
+            self.mark_active()
+
+    async def _process_mqtt_audio_message(self, message):
+        """
+        澶勭悊鏉ヨ嚜MQTT缃戝叧鐨勯煶棰戞秷鎭紝瑙ｆ瀽16瀛楄妭澶撮儴骞舵彁鍙栭煶棰戞暟鎹?
+        Args:
+            message: 鍖呭惈澶撮儴鐨勯煶棰戞秷鎭?
+        Returns:
+            bool: 鏄惁鎴愬姛澶勭悊浜嗘秷鎭?        """
+        try:
+            # 鎻愬彇澶撮儴淇℃伅
+            timestamp = int.from_bytes(message[8:12], "big")
+            audio_length = int.from_bytes(message[12:16], "big")
+
+            # 鎻愬彇闊抽鏁版嵁
+            if audio_length > 0 and len(message) >= 16 + audio_length:
+                # 鏈夋寚瀹氶暱搴︼紝鎻愬彇绮剧‘鐨勯煶棰戞暟鎹?                audio_data = message[16 : 16 + audio_length]
+                # 鍩轰簬鏃堕棿鎴宠繘琛屾帓搴忓鐞?                self._process_websocket_audio(audio_data, timestamp)
+                return True
+            elif len(message) > 16:
+                # 娌℃湁鎸囧畾闀垮害鎴栭暱搴︽棤鏁堬紝鍘绘帀澶撮儴鍚庡鐞嗗墿浣欐暟鎹?                audio_data = message[16:]
+                self.asr_audio_queue.put(audio_data)
+                return True
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"瑙ｆ瀽WebSocket闊抽鍖呭け璐? {e}")
+
+        # 澶勭悊澶辫触锛岃繑鍥濬alse琛ㄧず闇€瑕佺户缁鐞?        return False
+
+    def _process_websocket_audio(self, audio_data, timestamp):
+        """澶勭悊WebSocket鏍煎紡鐨勯煶棰戝寘"""
+        # 鍒濆鍖栨椂闂存埑搴忓垪绠＄悊
+        if not hasattr(self, "audio_timestamp_buffer"):
+            self.audio_timestamp_buffer = {}
+            self.last_processed_timestamp = 0
+            self.max_timestamp_buffer_size = 20
+
+        # 濡傛灉鏃堕棿鎴虫槸閫掑鐨勶紝鐩存帴澶勭悊
+        if timestamp >= self.last_processed_timestamp:
+            self.asr_audio_queue.put(audio_data)
+            self.last_processed_timestamp = timestamp
+
+            # 澶勭悊缂撳啿鍖轰腑鐨勫悗缁寘
+            processed_any = True
+            while processed_any:
+                processed_any = False
+                for ts in sorted(self.audio_timestamp_buffer.keys()):
+                    if ts > self.last_processed_timestamp:
+                        buffered_audio = self.audio_timestamp_buffer.pop(ts)
+                        self.asr_audio_queue.put(buffered_audio)
+                        self.last_processed_timestamp = ts
+                        processed_any = True
+                        break
+        else:
+            # 涔卞簭鍖咃紝鏆傚瓨
+            if len(self.audio_timestamp_buffer) < self.max_timestamp_buffer_size:
+                self.audio_timestamp_buffer[timestamp] = audio_data
+            else:
+                self.asr_audio_queue.put(audio_data)
+
+    async def handle_restart(self, message):
+        """澶勭悊鏈嶅姟鍣ㄩ噸鍚姹?""
+        try:
+
+            self.logger.bind(tag=TAG).info("鏀跺埌鏈嶅姟鍣ㄩ噸鍚寚浠わ紝鍑嗗鎵ц...")
+
+            # 鍙戦€佺‘璁ゅ搷搴?            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "server",
+                        "status": "success",
+                        "message": "鏈嶅姟鍣ㄩ噸鍚腑...",
+                        "content": {"action": "restart"},
+                    }
+                )
+            )
+
+            # 寮傛鎵ц閲嶅惎鎿嶄綔
+            def restart_server():
+                """瀹為檯鎵ц閲嶅惎鐨勬柟娉?""
+                time.sleep(1)
+                self.logger.bind(tag=TAG).info("鎵ц鏈嶅姟鍣ㄩ噸鍚?..")
+                subprocess.Popen(
+                    [sys.executable, "app.py"],
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                    start_new_session=True,
+                )
+                os._exit(0)
+
+            # 浣跨敤绾跨▼鎵ц閲嶅惎閬垮厤闃诲浜嬩欢寰幆
+            threading.Thread(target=restart_server, daemon=True).start()
+
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"閲嶅惎澶辫触: {str(e)}")
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "server",
+                        "status": "error",
+                        "message": f"Restart failed: {str(e)}",
+                        "content": {"action": "restart"},
+                    }
+                )
+            )
+
+    def _initialize_components(self):
+        try:
+            self.selected_module_str = build_module_string(
+                self.config.get("selected_module", {})
+            )
+            self.logger = create_connection_logger(self.selected_module_str)
+
+            """鍒濆鍖栫粍浠?""
+            if self.config.get("prompt") is not None:
+                user_prompt = self.config["prompt"]
+                # 浣跨敤蹇€熸彁绀鸿瘝杩涜鍒濆鍖?                prompt = self.prompt_manager.get_quick_prompt(user_prompt)
+                self.change_system_prompt(prompt)
+                self.logger.bind(tag=TAG).info(
+                    f"蹇€熷垵濮嬪寲缁勪欢: prompt鎴愬姛 {prompt[:50]}..."
+                )
+
+            """鍒濆鍖栨湰鍦扮粍浠讹紙鍋ュ．鍖栵細鑻ュ叏灞€瀹炰緥缂哄け鍒欐寜闇€鍗虫椂鍒涘缓锛?""
+            # VAD锛氫紭鍏堝鐢ㄥ叏灞€瀹炰緥锛岀己澶卞垯鎸夐渶鍒濆鍖?            if self.vad is None:
+                if self._vad is not None:
+                    self.vad = self._vad
+                else:
+                    try:
+                        modules = initialize_modules(
+                            self.logger,
+                            self.config,
+                            init_vad=True,
+                            init_asr=False,
+                            init_llm=False,
+                            init_tts=False,
+                            init_memory=False,
+                            init_intent=False,
+                        )
+                        self.vad = modules.get("vad", None)
+                        if self.vad is not None:
+                            self.logger.bind(tag=TAG).info("鎸夐渶鍒濆鍖朧AD鎴愬姛")
+                        else:
+                            self.logger.bind(tag=TAG).warning("鎸夐渶鍒濆鍖朧AD澶辫触锛岀户缁棤VAD妯″紡")
+                    except Exception as _e:
+                        self.logger.bind(tag=TAG).error(f"鎸夐渶鍒濆鍖朧AD寮傚父: {_e}")
+
+            # ASR锛氫紭鍏堝鐢ㄥ叏灞€鏈湴瀹炰緥锛涜嫢鍏ㄥ眬缂哄け鎴栦负杩滅/涓嶅彲鐢紝鍒欏嵆鏃跺垵濮嬪寲
+            if self.asr is None:
+                try:
+                    if (
+                        self._asr is not None
+                        and getattr(self._asr, "interface_type", None) == InterfaceType.LOCAL
+                    ):
+                        self.asr = self._asr
+                    else:
+                        self.asr = self._initialize_asr()
+                except Exception as _e:
+                    self.logger.bind(tag=TAG).error(f"鎸夐渶鍒濆鍖朅SR寮傚父: {_e}")
+
+            # 鍒濆鍖栧０绾硅瘑鍒?            self._initialize_voiceprint()
+
+            # 鎵撳紑璇煶璇嗗埆閫氶亾
+            if self.asr is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self.asr.open_audio_channels(self), self.loop
+                )
+            if self.tts is None:
+                self.tts = self._initialize_tts()
+            # 鎵撳紑璇煶鍚堟垚閫氶亾
+            asyncio.run_coroutine_threadsafe(
+                self.tts.open_audio_channels(self), self.loop
+            )
+
+            # 閲嶈锛氬湪TTS閫氶亾灏辩华鍚庯紝瑙﹀彂涓€娆♀€滄渶杩戣瑙夌粨鏋溾€濈殑鐭獥鍥炴斁
+            # 涔嬪墠鍦ㄦ彙鎵嬪悗绔嬪嵆瑙﹀彂锛屽彲鑳藉洜TTS灏氭湭鍒濆鍖栧鑷村洖鏀惧け璐?            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._try_replay_recent_vision_result(), self.loop
+                )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(
+                    f"TTS鍒濆鍖栧悗瑙﹀彂瑙嗚鍥炴斁澶辫触: {_e}"
+                )
+
+            """鍔犺浇璁板繂"""
+            self._initialize_memory()
+            """鍔犺浇鎰忓浘璇嗗埆"""
+            self._initialize_intent()
+            """鍒濆鍖栦笂鎶ョ嚎绋?""
+            self._init_report_threads()
+            """鏇存柊绯荤粺鎻愮ず璇?""
+            self._init_prompt_enhancement()
+
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"瀹炰緥鍖栫粍浠跺け璐? {e}")
+
+    def _init_prompt_enhancement(self):
+        # 鏇存柊涓婁笅鏂囦俊鎭?        self.prompt_manager.update_context_info(self, self.client_ip)
+        enhanced_prompt = self.prompt_manager.build_enhanced_prompt(
+            self.config["prompt"], self.device_id, self.client_ip
+        )
+        if enhanced_prompt:
+            self.change_system_prompt(enhanced_prompt)
+            self.logger.bind(tag=TAG).info("绯荤粺鎻愮ず璇嶅凡澧炲己鏇存柊")
+
+    def _init_report_threads(self):
+        """鍒濆鍖朅SR鍜孴TS涓婃姤绾跨▼"""
+        if not self.read_config_from_api or self.need_bind:
+            return
+        if self.chat_history_conf == 0:
+            return
+        if self.report_thread is None or not self.report_thread.is_alive():
+            self.report_thread = threading.Thread(
+                target=self._report_worker, daemon=True
+            )
+            self.report_thread.start()
+            self.logger.bind(tag=TAG).info("TTS涓婃姤绾跨▼宸插惎鍔?)
+
+    def _initialize_tts(self):
+        """鍒濆鍖朤TS"""
+        tts = None
+        if not self.need_bind:
+            tts = initialize_tts(self.config)
+
+        if tts is None:
+            tts = DefaultTTS(self.config, delete_audio_file=True)
+
+        return tts
+
+    def _initialize_asr(self):
+        """鍒濆鍖朅SR锛堝吋瀹规湭棰勭疆ASR鐨勬儏鍐碉級"""
+        try:
+            if self._asr is not None and getattr(self._asr, "interface_type", None) == InterfaceType.LOCAL:
+                # 濡傛灉鍏叡ASR鏄湰鍦版湇鍔★紝鍒欑洿鎺ュ鐢?                return self._asr
+        except Exception as e:
+            self.logger.bind(tag=TAG).warning(f"棰勭疆ASR妫€鏌ュけ璐ワ紝鍥為€€鍔ㄦ€佸垵濮嬪寲: {e}")
+
+        # 杩滅鏈嶅姟鎴栨湭鎻愪緵棰勭疆ASR锛氭寜閰嶇疆鍔ㄦ€佸垵濮嬪寲鏂板疄渚?        return initialize_asr(self.config)
+
+    def _initialize_voiceprint(self):
+        """涓哄綋鍓嶈繛鎺ュ垵濮嬪寲澹扮汗璇嗗埆"""
+        try:
+            voiceprint_config = self.config.get("voiceprint", {})
+            if voiceprint_config:
+                voiceprint_provider = VoiceprintProvider(voiceprint_config)
+                if voiceprint_provider is not None and voiceprint_provider.enabled:
+                    self.voiceprint_provider = voiceprint_provider
+                    self.logger.bind(tag=TAG).info("澹扮汗璇嗗埆鍔熻兘宸插湪杩炴帴鏃跺姩鎬佸惎鐢?)
+                else:
+                    self.logger.bind(tag=TAG).warning("澹扮汗璇嗗埆鍔熻兘鍚敤浣嗛厤缃笉瀹屾暣")
+            else:
+                self.logger.bind(tag=TAG).info("澹扮汗璇嗗埆鍔熻兘鏈惎鐢?)
+        except Exception as e:
+            self.logger.bind(tag=TAG).warning(f"澹扮汗璇嗗埆鍒濆鍖栧け璐? {str(e)}")
+
+    def _initialize_private_config(self):
+        """濡傛灉鏄粠閰嶇疆鏂囦欢鑾峰彇锛屽垯杩涜浜屾瀹炰緥鍖?""
+        if not self.read_config_from_api:
+            return
+        """浠庢帴鍙ｈ幏鍙栧樊寮傚寲鐨勯厤缃繘琛屼簩娆″疄渚嬪寲锛岄潪鍏ㄩ噺閲嶆柊瀹炰緥鍖?""
+        try:
+            begin_time = time.time()
+            private_config = get_private_config_from_api(
+                self.config,
+                self.headers.get("device-id"),
+                self.headers.get("client-id", self.headers.get("device-id")),
+            )
+            private_config["delete_audio"] = bool(self.config.get("delete_audio", True))
+            self.logger.bind(tag=TAG).info(
+                f"{time.time() - begin_time} 绉掞紝鑾峰彇宸紓鍖栭厤缃垚鍔? {json.dumps(filter_sensitive_info(private_config), ensure_ascii=False)}"
+            )
+        except DeviceNotFoundException as e:
+            self.need_bind = True
+            private_config = {}
+        except DeviceBindException as e:
+            self.need_bind = True
+            self.bind_code = e.bind_code
+            private_config = {}
+        except Exception as e:
+            self.need_bind = True
+            self.logger.bind(tag=TAG).error(f"鑾峰彇宸紓鍖栭厤缃け璐? {e}")
+            private_config = {}
+
+        init_llm, init_tts, init_memory, init_intent = (
+            False,
+            False,
+            False,
+            False,
+        )
+
+        init_vad = check_vad_update(self.common_config, private_config)
+        init_asr = check_asr_update(self.common_config, private_config)
+
+        if init_vad:
+            self.config["VAD"] = private_config["VAD"]
+            self.config["selected_module"]["VAD"] = private_config["selected_module"][
+                "VAD"
+            ]
+        if init_asr:
+            self.config["ASR"] = private_config["ASR"]
+            self.config["selected_module"]["ASR"] = private_config["selected_module"][
+                "ASR"
+            ]
+        if private_config.get("TTS", None) is not None:
+            init_tts = True
+            self.config["TTS"] = private_config["TTS"]
+            self.config["selected_module"]["TTS"] = private_config["selected_module"][
+                "TTS"
+            ]
+        if private_config.get("LLM", None) is not None:
+            init_llm = True
+            self.config["LLM"] = private_config["LLM"]
+            self.config["selected_module"]["LLM"] = private_config["selected_module"][
+                "LLM"
+            ]
+        if private_config.get("VLLM", None) is not None:
+            self.config["VLLM"] = private_config["VLLM"]
+            self.config["selected_module"]["VLLM"] = private_config["selected_module"][
+                "VLLM"
+            ]
+        if private_config.get("Memory", None) is not None:
+            init_memory = True
+            self.config["Memory"] = private_config["Memory"]
+            self.config["selected_module"]["Memory"] = private_config[
+                "selected_module"
+            ]["Memory"]
+        if private_config.get("Intent", None) is not None:
+            init_intent = True
+            self.config["Intent"] = private_config["Intent"]
+            model_intent = private_config.get("selected_module", {}).get("Intent", {})
+            self.config["selected_module"]["Intent"] = model_intent
+            # 鍔犺浇鎻掍欢閰嶇疆
+            if model_intent != "Intent_nointent":
+                plugin_from_server = private_config.get("plugins", {})
+                for plugin, config_str in plugin_from_server.items():
+                    plugin_from_server[plugin] = json.loads(config_str)
+                self.config["plugins"] = plugin_from_server
+                self.config["Intent"][self.config["selected_module"]["Intent"]][
+                    "functions"
+                ] = plugin_from_server.keys()
+        if private_config.get("prompt", None) is not None:
+            self.config["prompt"] = private_config["prompt"]
+        # 鑾峰彇澹扮汗淇℃伅
+        if private_config.get("voiceprint", None) is not None:
+            self.config["voiceprint"] = private_config["voiceprint"]
+        if private_config.get("summaryMemory", None) is not None:
+            self.config["summaryMemory"] = private_config["summaryMemory"]
+        if private_config.get("device_max_output_size", None) is not None:
+            self.max_output_size = int(private_config["device_max_output_size"])
+        if private_config.get("chat_history_conf", None) is not None:
+            self.chat_history_conf = int(private_config["chat_history_conf"])
+        if private_config.get("mcp_endpoint", None) is not None:
+            self.config["mcp_endpoint"] = private_config["mcp_endpoint"]
+        try:
+            modules = initialize_modules(
+                self.logger,
+                private_config,
+                init_vad,
+                init_asr,
+                init_llm,
+                init_tts,
+                init_memory,
+                init_intent,
+            )
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"鍒濆鍖栫粍浠跺け璐? {e}")
+            modules = {}
+        if modules.get("tts", None) is not None:
+            self.tts = modules["tts"]
+        if modules.get("vad", None) is not None:
+            self.vad = modules["vad"]
+        if modules.get("asr", None) is not None:
+            self.asr = modules["asr"]
+        if modules.get("llm", None) is not None:
+            self.llm = modules["llm"]
+        if modules.get("intent", None) is not None:
+            self.intent = modules["intent"]
+        if modules.get("memory", None) is not None:
+            self.memory = modules["memory"]
+
+    def _initialize_memory(self):
+        if self.memory is None:
+            return
+        """鍒濆鍖栬蹇嗘ā鍧?""
+        self.memory.init_memory(
+            role_id=self.device_id,
+            llm=self.llm,
+            summary_memory=self.config.get("summaryMemory", None),
+            save_to_file=not self.read_config_from_api,
+        )
+
+        # 鑾峰彇璁板繂鎬荤粨閰嶇疆
+        memory_config = self.config["Memory"]
+        memory_type = self.config["Memory"][self.config["selected_module"]["Memory"]][
+            "type"
+        ]
+        # 濡傛灉浣跨敤 nomen锛岀洿鎺ヨ繑鍥?        if memory_type == "nomem":
+            return
+        # 浣跨敤 mem_local_short 妯″紡
+        elif memory_type == "mem_local_short":
+            memory_llm_name = memory_config[self.config["selected_module"]["Memory"]][
+                "llm"
+            ]
+            if memory_llm_name and memory_llm_name in self.config["LLM"]:
+                # 濡傛灉閰嶇疆浜嗕笓鐢↙LM锛屽垯鍒涘缓鐙珛鐨凩LM瀹炰緥
+                from core.utils import llm as llm_utils
+
+                memory_llm_config = self.config["LLM"][memory_llm_name]
+                memory_llm_type = memory_llm_config.get("type", memory_llm_name)
+                memory_llm = llm_utils.create_instance(
+                    memory_llm_type, memory_llm_config
+                )
+                self.logger.bind(tag=TAG).info(
+                    f"涓鸿蹇嗘€荤粨鍒涘缓浜嗕笓鐢↙LM: {memory_llm_name}, 绫诲瀷: {memory_llm_type}"
+                )
+                self.memory.set_llm(memory_llm)
+            else:
+                # 鍚﹀垯浣跨敤涓籐LM
+                self.memory.set_llm(self.llm)
+                self.logger.bind(tag=TAG).info("浣跨敤涓籐LM浣滀负鎰忓浘璇嗗埆妯″瀷")
+
+    def _initialize_intent(self):
+        if self.intent is None:
+            return
+        self.intent_type = self.config["Intent"][
+            self.config["selected_module"]["Intent"]
+        ]["type"]
+        if self.intent_type == "function_call" or self.intent_type == "intent_llm":
+            self.load_function_plugin = True
+        """鍒濆鍖栨剰鍥捐瘑鍒ā鍧?""
+        # 鑾峰彇鎰忓浘璇嗗埆閰嶇疆
+        intent_config = self.config["Intent"]
+        intent_type = self.config["Intent"][self.config["selected_module"]["Intent"]][
+            "type"
+        ]
+
+        # 濡傛灉浣跨敤 nointent锛岀洿鎺ヨ繑鍥?        if intent_type == "nointent":
+            return
+        # 浣跨敤 intent_llm 妯″紡
+        elif intent_type == "intent_llm":
+            intent_llm_name = intent_config[self.config["selected_module"]["Intent"]][
+                "llm"
+            ]
+
+            if intent_llm_name and intent_llm_name in self.config["LLM"]:
+                # 濡傛灉閰嶇疆浜嗕笓鐢↙LM锛屽垯鍒涘缓鐙珛鐨凩LM瀹炰緥
+                from core.utils import llm as llm_utils
+
+                intent_llm_config = self.config["LLM"][intent_llm_name]
+                intent_llm_type = intent_llm_config.get("type", intent_llm_name)
+                intent_llm = llm_utils.create_instance(
+                    intent_llm_type, intent_llm_config
+                )
+                self.logger.bind(tag=TAG).info(
+                    f"涓烘剰鍥捐瘑鍒垱寤轰簡涓撶敤LLM: {intent_llm_name}, 绫诲瀷: {intent_llm_type}"
+                )
+                self.intent.set_llm(intent_llm)
+            else:
+                # 鍚﹀垯浣跨敤涓籐LM
+                self.intent.set_llm(self.llm)
+                self.logger.bind(tag=TAG).info("浣跨敤涓籐LM浣滀负鎰忓浘璇嗗埆妯″瀷")
+
+        """鍔犺浇缁熶竴宸ュ叿澶勭悊鍣?""
+        self.func_handler = UnifiedToolHandler(self)
+
+        # 寮傛鍒濆鍖栧伐鍏峰鐞嗗櫒
+        if hasattr(self, "loop") and self.loop:
+            asyncio.run_coroutine_threadsafe(self.func_handler._initialize(), self.loop)
+
+    def change_system_prompt(self, prompt):
+        self.prompt = prompt
+        # 鏇存柊绯荤粺prompt鑷充笂涓嬫枃
+        self.dialogue.update_system_message(self.prompt)
+
+    def chat(self, query, depth=0):
+        self.logger.bind(tag=TAG).info(f"澶фā鍨嬫敹鍒扮敤鎴锋秷鎭? {query}")
+        self.llm_finish_task = False
+
+        # 涓烘渶椤跺眰鏃舵柊寤轰細璇滻D鍜屽彂閫丗IRST璇锋眰
+        if depth == 0:
+            self.sentence_id = str(uuid.uuid4().hex)
+            self.dialogue.put(Message(role="user", content=query))
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=self.sentence_id,
+                    sentence_type=SentenceType.FIRST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+            # 涓嬪彂FIRST鍗宠涓烘椿璺?            self.mark_active()
+
+        # Define intent functions
+        functions = None
+        if self.intent_type == "function_call" and hasattr(self, "func_handler"):
+            functions = self.func_handler.get_functions()
+        response_message = []
+
+        try:
+            # 浣跨敤甯﹁蹇嗙殑瀵硅瘽
+            memory_str = None
+            if self.memory is not None:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.memory.query_memory(query), self.loop
+                )
+                memory_str = future.result()
+
+            if self.intent_type == "function_call" and functions is not None:
+                # 浣跨敤鏀寔functions鐨剆treaming鎺ュ彛
+                llm_responses = self.llm.response_with_functions(
+                    self.session_id,
+                    self.dialogue.get_llm_dialogue_with_memory(
+                        memory_str, self.config.get("voiceprint", {})
+                    ),
+                    functions=functions,
+                )
+            else:
+                llm_responses = self.llm.response(
+                    self.session_id,
+                    self.dialogue.get_llm_dialogue_with_memory(
+                        memory_str, self.config.get("voiceprint", {})
+                    ),
+                )
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"LLM 澶勭悊鍑洪敊 {query}: {e}")
+            return None
+
+        # 澶勭悊娴佸紡鍝嶅簲
+        tool_call_flag = False
+        function_name = None
+        function_id = None
+        function_arguments = ""
+        content_arguments = ""
+        self.client_abort = False
+        emotion_flag = True
+        for response in llm_responses:
+            if self.client_abort:
+                break
+            if self.intent_type == "function_call" and functions is not None:
+                content, tools_call = response
+                if "content" in response:
+                    content = response["content"]
+                    tools_call = None
+                if content is not None and len(content) > 0:
+                    content_arguments += content
+
+                if not tool_call_flag and content_arguments.startswith("<tool_call>"):
+                    # print("content_arguments", content_arguments)
+                    tool_call_flag = True
+
+                if tools_call is not None and len(tools_call) > 0:
+                    tool_call_flag = True
+                    if tools_call[0].id is not None:
+                        function_id = tools_call[0].id
+                    if tools_call[0].function.name is not None:
+                        function_name = tools_call[0].function.name
+                    if tools_call[0].function.arguments is not None:
+                        function_arguments += tools_call[0].function.arguments
+            else:
+                content = response
+
+            # 鍦╨lm鍥炲涓幏鍙栨儏缁〃鎯咃紝涓€杞璇濆彧鍦ㄥ紑澶磋幏鍙栦竴娆?            if emotion_flag and content is not None and content.strip():
+                asyncio.run_coroutine_threadsafe(
+                    textUtils.get_emotion(self, content),
+                    self.loop,
+                )
+                emotion_flag = False
+
+            if content is not None and len(content) > 0:
+                if not tool_call_flag:
+                    # 鍙戦€佸埌璁惧鍓嶆竻娲楁枃鏈紝閬垮厤鍑虹幇 ###/####/**/脳 绛夌鍙?                    try:
+                        from core.utils import textUtils as _txu
+                        _clean = _txu.sanitize_for_device(content)
+                    except Exception:
+                        _clean = content
+                    response_message.append(_clean)
+                    self.tts.tts_text_queue.put(
+                        TTSMessageDTO(
+                            sentence_id=self.sentence_id,
+                            sentence_type=SentenceType.MIDDLE,
+                            content_type=ContentType.TEXT,
+                            content_detail=_clean,
+                        )
+                    )
+                    # 姣忔涓嬪彂鍒锋柊娲昏穬
+                    self.mark_active()
+        # 澶勭悊function call
+        if tool_call_flag:
+            bHasError = False
+            if function_id is None:
+                a = extract_json_from_string(content_arguments)
+                if a is not None:
+                    try:
+                        content_arguments_json = json.loads(a)
+                        function_name = content_arguments_json["name"]
+                        function_arguments = json.dumps(
+                            content_arguments_json["arguments"], ensure_ascii=False
+                        )
+                        function_id = str(uuid.uuid4().hex)
+                    except Exception as e:
+                        bHasError = True
+                        response_message.append(a)
+                else:
+                    bHasError = True
+                    response_message.append(content_arguments)
+                if bHasError:
+                    self.logger.bind(tag=TAG).error(
+                        f"function call error: {content_arguments}"
+                    )
+            if not bHasError:
+                # 濡傞渶瑕佸ぇ妯″瀷鍏堝鐞嗕竴杞紝娣诲姞鐩稿叧澶勭悊鍚庣殑鏃ュ織鎯呭喌
+                if len(response_message) > 0:
+                    text_buff = "".join(response_message)
+                    self.tts_MessageText = text_buff
+                    self.dialogue.put(Message(role="assistant", content=text_buff))
+                response_message.clear()
+                self.logger.bind(tag=TAG).debug(
+                    f"function_name={function_name}, function_id={function_id}, function_arguments={function_arguments}"
+                )
+                function_call_data = {
+                    "name": function_name,
+                    "id": function_id,
+                    "arguments": function_arguments,
+                }
+
+                # 浣跨敤缁熶竴宸ュ叿澶勭悊鍣ㄥ鐞嗘墍鏈夊伐鍏疯皟鐢?                result = asyncio.run_coroutine_threadsafe(
+                    self.func_handler.handle_llm_function_call(
+                        self, function_call_data
+                    ),
+                    self.loop,
+                ).result()
+                # 宸ュ叿鎵ц鏈熼棿瑙嗕负娲昏穬锛屽睆钄界┖闂茶秴鏃?                try:
+                    self._tool_running = True
+                    self.mark_active()
+                except Exception:
+                    pass
+                self._handle_function_result(result, function_call_data, depth=depth)
+                # 宸ュ叿瀹屾垚锛屽彇娑堜繚鎶?                try:
+                    self._tool_running = False
+                    self.mark_active()
+                except Exception:
+                    pass
+
+        # 瀛樺偍瀵硅瘽鍐呭
+        if len(response_message) > 0:
+            text_buff = "".join(response_message)
+            self.tts_MessageText = text_buff
+            self.dialogue.put(Message(role="assistant", content=text_buff))
+            # 闈炲嚱鏁拌皟鐢ㄨ矾寰勶細璁板綍褰撳墠杞璇?            try:
+                self._append_conversation_event(question=query, reply=text_buff, source="realtime")
+            except Exception:
+                pass
+        if depth == 0:
+            self.logger.bind(tag=TAG).info(f"[CHAT_FINISH_DEBUG] chat()鍙戦€丩AST: sentence_id={self.sentence_id}, tool_call_flag={tool_call_flag}")
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=self.sentence_id,
+                    sentence_type=SentenceType.LAST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+            # 缁撴潫娈典篃鍒锋柊娲昏穬
+            self.mark_active()
+        self.llm_finish_task = True
+        self.logger.bind(tag=TAG).info(f"[CHAT_FINISH_DEBUG] chat()瀹屾垚: llm_finish_task=True")
+        # 浣跨敤lambda寤惰繜璁＄畻锛屽彧鏈夊湪DEBUG绾у埆鏃舵墠鎵цget_llm_dialogue()
+        self.logger.bind(tag=TAG).debug(
+            lambda: json.dumps(
+                self.dialogue.get_llm_dialogue(), indent=4, ensure_ascii=False
+            )
+        )
+
+        return True
+
+    def _handle_function_result(self, result, function_call_data, depth):
+        if result.action == Action.RESPONSE:  # 鐩存帴鍥炲鍓嶇
+            text = result.response
+            try:
+                from core.utils import textUtils as _txu
+                text = _txu.sanitize_for_device(text)
+            except Exception:
+                pass
+            self.tts.tts_one_sentence(self, ContentType.TEXT, content_detail=text)
+            self.dialogue.put(Message(role="assistant", content=text))
+            # 鍑芥暟璋冪敤璺緞锛氳褰曞綋鍓嶈疆瀵硅瘽
+            try:
+                self._append_conversation_event(question=self._get_last_user_content(), reply=text, source="realtime")
+            except Exception:
+                pass
+        elif result.action == Action.REQLLM:  # 璋冪敤鍑芥暟鍚庡啀璇锋眰llm鐢熸垚鍥炲
+            text = result.result
+            if text is not None and len(text) > 0:
+                function_id = function_call_data["id"]
+                function_name = function_call_data["name"]
+                function_arguments = function_call_data["arguments"]
+                self.dialogue.put(
+                    Message(
+                        role="assistant",
+                        tool_calls=[
+                            {
+                                "id": function_id,
+                                "function": {
+                                    "arguments": (
+                                        "{}"
+                                        if function_arguments == ""
+                                        else function_arguments
+                                    ),
+                                    "name": function_name,
+                                },
+                                "type": "function",
+                                "index": 0,
+                            }
+                        ],
+                    )
+                )
+
+                self.dialogue.put(
+                    Message(
+                        role="tool",
+                        tool_call_id=(
+                            str(uuid.uuid4()) if function_id is None else function_id
+                        ),
+                        content=text,
+                    )
+                )
+                self.chat(text, depth=depth + 1)
+        elif result.action == Action.NOTFOUND or result.action == Action.ERROR:
+            text = result.response if result.response else result.result
+            try:
+                from core.utils import textUtils as _txu
+                text = _txu.sanitize_for_device(text)
+            except Exception:
+                pass
+            self.tts.tts_one_sentence(self, ContentType.TEXT, content_detail=text)
+            self.dialogue.put(Message(role="assistant", content=text))
+        else:
+            pass
+
+    def handle_vision_bridge(self, payload: dict):
+        """澶勭悊鏉ヨ嚜HTTP瑙嗚鎺ュ彛鐨勫悓姝ョ粨鏋滄ˉ鎺ャ€?
+        浠呭湪璁惧鏈€氳繃MCP鍥炰紶缁撴灉鏃朵綔涓哄厹搴曪紝閬垮厤瀵硅瘽绔暱鏃堕棿鏃犲搷搴旀垨鏂紑銆?
+        Args:
+            payload: vision_handler 杩斿洖鐨凧SON瀛楀吀锛屽寘鍚?response 涓庡彲閫?correlation_id銆?        """
+        try:
+            if not isinstance(payload, dict):
+                return
+            corr_id = payload.get("correlation_id")
+            if corr_id and corr_id in self._seen_vision_ids:
+                return  # 宸插鐞嗚繃锛岄伩鍏嶉噸澶嶆挱鎶?            text = payload.get("response") or ""
+            if not text:
+                return
+            # 鏍囪宸插鐞?            if corr_id:
+                if len(self._seen_vision_ids) > 100:
+                    # 绠€鍗曢檺鍒堕泦鍚堝ぇ灏?                    self._seen_vision_ids.clear()
+                self._seen_vision_ids.add(corr_id)
+            # 鍙戦€佸埌璁惧鍓嶆竻娲?            try:
+                from core.utils import textUtils as _txu
+                text = _txu.sanitize_for_device(text)
+            except Exception:
+                pass
+            # 浣跨敤鍒嗘鎾姤鏈熼棿锛屾爣璁拌瑙夊湪鎵ц骞跺埛鏂版椿璺?            try:
+                # 鍚姩瑙嗚绛夊緟淇濇椿锛岀洿鍒扮粨鏋滄挱鎶ュ畬鎴?                self.vision_wait_start()
+                self.mark_active()
+            except Exception:
+                pass
+            # 浣跨敤鍒嗘鎾姤锛岀‘淇濇湁鏄庣‘鐨?FIRST->MIDDLE->LAST 缁撴潫锛岄槻姝㈡畫鐣欓槦鍒楀鑷村悗缁紓甯?            self._speak_vision_response(text)
+            try:
+                # 鎾姤瀹屾垚鍚庡仠姝㈣瑙変繚娲?                self.vision_wait_stop()
+                self.mark_active()
+            except Exception:
+                pass
+            self.logger.bind(tag=TAG).info("宸查€氳繃HTTP妗ユ帴瑙嗚缁撴灉鍒颁細璇濓紙鍒嗘鎾姤锛?)
+        except Exception as _e:
+            try:
+                self.logger.bind(tag=TAG).warning(f"澶勭悊瑙嗚妗ユ帴缁撴灉寮傚父: {_e}")
+            except Exception:
+                pass
+
+    # 鏂板锛氳瑙夌瓑寰呬繚娲诲惎鍋滄柟娉?    def vision_wait_start(self, interval_sec: float = 8.0):
+        """寮€濮嬭瑙夌瓑寰呬繚娲伙紝鍛ㄦ湡鍒锋柊娲昏穬鏃堕棿锛岄伩鍏嶅湪瑙嗚缁撴灉杩斿洖鍓嶈娓呯悊銆?""
+        try:
+            # 鑻ュ凡鏈変换鍔″垯涓嶉噸澶嶅紑鍚?            if self._vision_keepalive_task and not self._vision_keepalive_task.done():
+                return
+            self._vision_inflight = True
+
+            async def _keepalive():
+                try:
+                 

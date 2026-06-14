@@ -1,0 +1,28 @@
+﻿# Docker瀹夎Server
+
+services:
+  xiaozhi-esp32-server:
+    image: ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:server_latest
+    container_name: xiaozhi-esp32-server
+    restart: always
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TZ=Asia/Shanghai
+      # 閫氳繃 .env 鎻愪緵鐨勫瘑閽ユ敞鍏ュ埌瀹瑰櫒鐜
+      - ARK_API_KEY=${ARK_API_KEY}
+      # 閫氱敤鍚嶏紝渚涗唬鐮佸唴浼樺厛绾у洖閫€浣跨敤锛堜笌 ARK_API_KEY 鍚屽€硷級
+      - VLLM_API_KEY=${ARK_API_KEY}
+      # 缁熶竴鎸囧畾 ModelScope 缂撳瓨鐩綍锛岄伩鍏嶈矾寰勬贩涔?      - MODELSCOPE_CACHE=/root/.cache/modelscope
+      # Doubao 娴佸紡 ASR 鎵€闇€锛堣鍦?.env 涓彁渚涘疄闄呭€硷級
+      - DOU_ASR_APPID=${DOU_ASR_APPID}
+      - DOU_ASR_TOKEN=${DOU_ASR_TOKEN}
+    ports:
+      # ws鏈嶅姟绔?      - "8000:8000"
+      # http鏈嶅姟鐨勭鍙ｏ紝鐢ㄤ簬绠€鍗昈TA鎺ュ彛(鍗曟湇鍔￠儴缃?锛屼互鍙婅瑙夊垎鏋愭帴鍙?      - "8003:8003"
+    volumes:
+      # 浠呮寕杞芥牳蹇冧唬鐮佷笌鎻掍欢锛岄伩鍏嶈鐩栭暅鍍忓唴缃?models 鐩綍
+      - ./core:/opt/xiaozhi-esp32-server/core
+      - ./plugins_func:/opt/xiaozhi-esp32-server/plugins_func
+      # 閰嶇疆鏂囦欢鐩綍锛堜繚鐣欐暟鎹笌鏈湴瑕嗙洊閰嶇疆锛?      - ./data:/opt/xiaozhi-esp32-server/data
+      # 濡傞渶鑷甫鏈湴妯″瀷锛屽彲灏嗗畬鏁存ā鍨嬫枃浠?model.pt)鏀惧埌瀹夸富鏈?models/SenseVoiceSmall/ 涓嬶紝鍐嶆墜鍔ㄦ槧灏勬暣涓洰褰?      # 娉ㄦ剰锛氫笉瑕佸皢鐩綍鏄犲皠鍒板鍣ㄥ唴鐨勬枃浠惰矾寰?      # 渚嬪锛堝彲閫夛級锛?      # - ./models/SenseVoiceSmall:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall

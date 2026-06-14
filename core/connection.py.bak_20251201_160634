@@ -1,0 +1,1414 @@
+import os
+import sys
+import copy
+import json
+import uuid
+import time
+import queue
+import asyncio
+import threading
+import traceback
+import subprocess
+import websockets
+from core.utils.util import (
+    extract_json_from_string,
+    check_vad_update,
+    check_asr_update,
+    filter_sensitive_info,
+)
+from typing import Dict, Any
+from collections import deque
+from core.utils.modules_initialize import (
+    initialize_modules,
+    initialize_tts,
+    initialize_asr,
+)
+from core.handle.reportHandle import report
+from core.providers.tts.default import DefaultTTS
+from concurrent.futures import ThreadPoolExecutor
+from core.utils.dialogue import Message, Dialogue
+from core.providers.asr.dto.dto import InterfaceType
+from core.handle.textHandle import handleTextMessage
+from core.providers.tools.unified_tool_handler import UnifiedToolHandler
+from plugins_func.loadplugins import auto_import_modules
+from plugins_func.register import Action, ActionResponse
+from core.auth import AuthMiddleware, AuthenticationError
+from config.config_loader import get_private_config_from_api
+from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+from config.logger import setup_logging, build_module_string, create_connection_logger
+from config.manage_api_client import DeviceNotFoundException, DeviceBindException
+from core.utils.prompt_manager import PromptManager
+from core.utils.voiceprint_provider import VoiceprintProvider
+from core.utils import textUtils
+
+TAG = __name__
+
+auto_import_modules("plugins_func.functions")
+
+
+class TTSException(RuntimeError):
+    pass
+
+
+class ConnectionHandler:
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        _vad,
+        _asr,
+        _llm,
+        _memory,
+        _intent,
+        server=None,
+    ):
+        self.common_config = config
+        self.config = copy.deepcopy(config)
+        self.session_id = str(uuid.uuid4())
+        self.logger = setup_logging()
+        self.server = server  # 保存server实例的引用
+
+        self.auth = AuthMiddleware(config)
+        self.need_bind = False
+        self.bind_code = None
+        self.read_config_from_api = self.config.get("read_config_from_api", False)
+
+        self.websocket = None
+        self.headers = None
+        self.device_id = None
+        self.client_ip = None
+        self.student_id = None
+        self.prompt = None
+        self.welcome_msg = None
+        self.max_output_size = 0
+        self.chat_history_conf = 0
+        self.audio_format = "opus"
+        # PCM端序：默认不指定(None)，如客户端未声明则在ASR阶段自动检测；如声明则使用 'le' 或 'be'
+        self.pcm_endian = None
+        # PCM编码：'s16' (默认) 或 'u16'；None 表示未声明，由ASR阶段尝试自动识别/保持默认
+        self.pcm_encoding = None
+        # ASR语言偏好（例如 'zh'/'en'/'yue'），若为空则由提供者自动检测
+        self.asr_language = None
+
+        # 客户端状态相关
+        self.client_abort = False
+        self.client_is_speaking = False
+        self.client_listen_mode = "auto"
+        # 监听静音守护任务引用与最后一帧时间戳（毫秒）
+        self.listen_silence_task = None
+        self.last_audio_frame_time = 0.0
+
+        # 线程任务相关
+        self.loop = asyncio.get_event_loop()
+        self.stop_event = threading.Event()
+        self.executor = ThreadPoolExecutor(max_workers=5)
+
+        # 添加上报线程池
+        self.report_queue = queue.Queue()
+        self.report_thread = None
+        # 未来可以通过修改此处，调节asr的上报和tts的上报，目前默认都开启
+        self.report_asr_enable = self.read_config_from_api
+        self.report_tts_enable = self.read_config_from_api
+
+        # 依赖的组件
+        self.vad = None
+        self.asr = None
+        self.tts = None
+        self._asr = _asr
+        self._vad = _vad
+        self.llm = _llm
+        self.memory = _memory
+        self.intent = _intent
+
+        # 为每个连接单独管理声纹识别
+        self.voiceprint_provider = None
+
+        # vad相关变量
+        self.client_audio_buffer = bytearray()
+        self.client_have_voice = False
+        self.last_activity_time = 0.0  # 统一的活动时间戳（毫秒）
+        self.client_voice_stop = False
+        self.client_voice_window = deque(maxlen=5)
+        self.last_is_voice = False
+
+        # asr相关变量
+        # 因为实际部署时可能会用到公共的本地ASR，不能把变量暴露给公共ASR
+        # 所以涉及到ASR的变量，需要在这里定义，属于connection的私有变量
+        self.asr_audio = []
+        self.asr_audio_queue = queue.Queue()
+
+        # llm相关变量
+        self.llm_finish_task = True
+        self.dialogue = Dialogue()
+
+        # tts相关变量
+        self.sentence_id = None
+        # 处理TTS响应没有文本返回
+        self.tts_MessageText = ""
+
+        # iot相关变量
+        self.iot_descriptors = {}
+        self.func_handler = None
+
+        self.cmd_exit = self.config["exit_commands"]
+
+        # 是否在聊天结束后关闭连接
+        self.close_after_chat = False
+        self.load_function_plugin = False
+        self.intent_type = "nointent"
+
+        self.timeout_seconds = (
+            int(self.config.get("close_connection_no_voice_time", 120)) + 60
+        )  # 在原来第一道关闭的基础上加60秒，进行二道关闭
+        self.timeout_task = None
+
+        # {"mcp":true} 表示启用MCP功能
+        self.features = None
+
+        # 标记连接是否来自MQTT
+        self.conn_from_mqtt_gateway = False
+
+        # 初始化提示词管理器
+        self.prompt_manager = PromptManager(config, self.logger)
+        # 数据根目录（与 WebUI 一致，写入 data/ 下）
+        try:
+            self._data_root = os.path.abspath(os.path.join(os.getcwd(), "data"))
+        except Exception:
+            self._data_root = os.path.abspath("data")
+        # 视觉结果去重缓存（用于HTTP桥接的容错回传）
+        self._seen_vision_ids = set()
+
+        # 工具运行状态标记（用于暂停空闲超时）
+        self._tool_running = False
+
+        # WebSocket运行状态与保活任务
+        self.ws_open = False
+        self._ping_keepalive_task = None
+        # 视觉/工具执行状态（用于屏蔽空闲超时）
+        self._vision_inflight = False
+        # 新增：视觉保活任务引用
+        self._vision_keepalive_task = None
+
+    def mark_active(self):
+        """刷新连接的最后活跃时间（毫秒）。在下行文本/音频、保活或工具执行期间调用。"""
+        try:
+            self.last_activity_time = time.time() * 1000
+        except Exception:
+            pass
+
+    async def _try_replay_recent_vision_result(self, window_seconds: int = 60):
+        """在新连接建立后，短窗回放最近的视觉结果，避免拍照结束但上次连接已断开时丢播。
+
+        策略：
+        - 在 data/vision_records/YYYYMMDD 下，查找包含当前 client-id 前8位的最近 .json；
+        - 仅回放修改时间在 window_seconds 内的结果；
+        - 文本先进行 sanitize，再直接TTS播报，并加入当前会话对话记录。
+        """
+        try:
+            cid = (self.headers.get("client-id", "") or "")[:8]
+            if not cid:
+                return
+            from datetime import datetime, timedelta
+            base = os.path.abspath(os.path.join(os.getcwd(), "data", "vision_records"))
+            day_dir = os.path.join(base, datetime.now().strftime("%Y%m%d"))
+            if not os.path.isdir(day_dir):
+                return
+            now = datetime.now()
+            candidates = [
+                f for f in os.listdir(day_dir) if f.endswith(".json") and cid in f
+            ]
+            if not candidates:
+                return
+            # 取最近的几个文件检查时间窗
+            candidates.sort(
+                key=lambda fn: os.path.getmtime(os.path.join(day_dir, fn)),
+                reverse=True,
+            )
+            for fn in candidates[:5]:
+                p = os.path.join(day_dir, fn)
+                mtime = datetime.fromtimestamp(os.path.getmtime(p))
+                if (now - mtime).total_seconds() > window_seconds:
+                    continue
+                try:
+                    import json as _json
+                    with open(p, "r", encoding="utf-8") as jf:
+                        data = _json.load(jf)
+                    if isinstance(data, dict) and data.get("success") is True and data.get("action") == "RESPONSE":
+                        text = data.get("response") or ""
+                        if not text:
+                            continue
+                        try:
+                            from core.utils import textUtils as _txu
+                            text = _txu.sanitize_for_device(text)
+                        except Exception:
+                            pass
+                        # 直接进行分段播报，明确 FIRST/MIDDLE/LAST，避免设备端句界不完整
+                        self._speak_vision_response(text)
+                        # 同步写入对话
+                        self.dialogue.put(Message(role="assistant", content=text))
+                        try:
+                            self._append_conversation_event(question=self._get_last_user_content(), reply=text, source="realtime")
+                        except Exception:
+                            pass
+                        self.logger.bind(tag=TAG).info("重连后回放最近视觉结果完成")
+                        # 刷新活动时间，防止紧接着被超时清理
+                        self.last_activity_time = time.time() * 1000
+                        return
+                except Exception:
+                    continue
+        except Exception as _e:
+            try:
+                self.logger.bind(tag=TAG).warning(f"重连视觉结果回放失败: {_e}")
+            except Exception:
+                pass
+
+    def _append_conversation_event(self, question: str, reply: str, files=None, source: str = "realtime"):
+        """将一轮对话写入 data/conversations/YYYYMMDD/<session_id>.jsonl
+        - conversation_id 采用当前连接的 session_id（同一连接内归档到同一文件）
+        - 学号来自握手头保存的 self.student_id（如果没有则为空字符串）
+        """
+        try:
+            from datetime import datetime as _dt
+            import json as _json
+            # 存档前净化文本，去除 Markdown/LaTeX/特殊符号，保证查看与设备一致
+            try:
+                from core.utils import textUtils as _txu
+                _q = _txu.sanitize_for_device(question or "")
+                _r = _txu.sanitize_for_device(reply or "")
+            except Exception:
+                _q = question or ""
+                _r = reply or ""
+            now = _dt.now()
+            date_str = now.strftime("%Y%m%d")
+            out_dir = os.path.join(self._data_root, "conversations", date_str)
+            os.makedirs(out_dir, exist_ok=True)
+            cid = (self.session_id or _dt.now().strftime("%H%M%S"))
+            line = {
+                "timestamp": now.isoformat(timespec="seconds"),
+                "source": source or "realtime",
+                "student_id": (self.student_id or ""),
+                "question": _q,
+                "reply": _r,
+                "files": [f for f in (files or []) if f],
+            }
+            with open(os.path.join(out_dir, f"{cid}.jsonl"), "a", encoding="utf-8") as f:
+                f.write(_json.dumps(line, ensure_ascii=False) + "\n")
+        except Exception as _e:
+            try:
+                self.logger.bind(tag=TAG).warning(f"保存对话记录失败: {_e}")
+            except Exception:
+                pass
+
+    def _get_last_user_content(self) -> str:
+        try:
+            for m in reversed(self.dialogue.dialogue):
+                if getattr(m, "role", None) == "user" and getattr(m, "content", None):
+                    return m.content
+        except Exception:
+            pass
+        return ""
+
+    async def handle_connection(self, ws):
+        try:
+            # 获取并验证headers
+            self.headers = dict(ws.request.headers)
+
+            if self.headers.get("device-id", None) is None:
+                # 尝试从 URL 的查询参数中获取 device-id
+                from urllib.parse import parse_qs, urlparse
+
+                # 从 WebSocket 请求中获取路径
+                request_path = ws.request.path
+                if not request_path:
+                    self.logger.bind(tag=TAG).error("无法获取请求路径")
+                    return
+                parsed_url = urlparse(request_path)
+                query_params = parse_qs(parsed_url.query)
+                if "device-id" in query_params:
+                    self.headers["device-id"] = query_params["device-id"][0]
+                    self.headers["client-id"] = query_params["client-id"][0]
+                else:
+                    await ws.send("端口正常，如需测试连接，请使用test_page.html")
+                    await self.close(ws)
+                    return
+            real_ip = self.headers.get("x-real-ip") or self.headers.get(
+                "x-forwarded-for"
+            )
+            if real_ip:
+                self.client_ip = real_ip.split(",")[0].strip()
+            else:
+                self.client_ip = ws.remote_address[0]
+            self.logger.bind(tag=TAG).info(
+                f"{self.client_ip} conn - Headers: {self.headers}"
+            )
+
+            # 提取并记录学号（若客户端在握手头中传递了 Student-Id）
+            try:
+                sid_header = (
+                    self.headers.get("Student-Id")
+                    or self.headers.get("student-id")
+                    or self.headers.get("student_id")
+                )
+                if sid_header:
+                    self.student_id = str(sid_header).strip()
+                    self.logger.bind(tag=TAG).info(
+                        f"提取到学号(来自Header): {self.student_id}"
+                    )
+                else:
+                    self.logger.bind(tag=TAG).info("未在Header中发现学号(Student-Id)")
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(
+                    f"解析Header中Student-Id异常: {_e}"
+                )
+
+            # 尝试从 Header 或 URL 查询参数中提取音频格式，优先级：Header > Query
+            try:
+                audio_fmt_header = (
+                    self.headers.get("Audio-Format")
+                    or self.headers.get("audio-format")
+                    or self.headers.get("audio_format")
+                )
+                fmt_from_header = (
+                    str(audio_fmt_header).strip().lower() if audio_fmt_header else None
+                )
+
+                # 解析查询参数（始终解析，以便获取 audio_format）
+                from urllib.parse import parse_qs, urlparse
+
+                parsed_url_all = urlparse(ws.request.path or "")
+                query_params_all = parse_qs(parsed_url_all.query)
+                fmt_from_query = None
+                if "audio_format" in query_params_all:
+                    fmt_from_query = (
+                        query_params_all.get("audio_format", [None])[0] or ""
+                    ).strip().lower()
+
+                final_fmt = fmt_from_header or fmt_from_query
+                if final_fmt in ("pcm", "opus"):
+                    self.audio_format = final_fmt
+                    self.logger.bind(tag=TAG).info(
+                        f"音频格式设定: {self.audio_format} (来源: {'Header' if fmt_from_header else 'Query'})"
+                    )
+                elif final_fmt:
+                    self.logger.bind(tag=TAG).warning(
+                        f"收到未知音频格式: {final_fmt}，保持默认: {self.audio_format}"
+                    )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"解析音频格式失败: {_e}")
+
+            # 解析PCM端序，可选头：PCM-Endian/pcm-endian/pcm_endian，值为 le 或 be
+            try:
+                endian_header = (
+                    self.headers.get("PCM-Endian")
+                    or self.headers.get("pcm-endian")
+                    or self.headers.get("pcm_endian")
+                )
+                if endian_header:
+                    endian = str(endian_header).strip().lower()
+                    if endian in ("le", "be"):
+                        self.pcm_endian = endian
+                        self.logger.bind(tag=TAG).info(
+                            f"PCM端序设定: {self.pcm_endian} (来源: Header)"
+                        )
+                    else:
+                        self.logger.bind(tag=TAG).warning(
+                            f"收到未知PCM端序: {endian}，保持默认: {self.pcm_endian}"
+                        )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"解析PCM端序失败: {_e}")
+
+            # 解析PCM编码，可选头：PCM-Encoding/pcm-encoding/pcm_encoding，值为 s16 或 u16
+            try:
+                enc_header = (
+                    self.headers.get("PCM-Encoding")
+                    or self.headers.get("pcm-encoding")
+                    or self.headers.get("pcm_encoding")
+                )
+                if enc_header:
+                    enc = str(enc_header).strip().lower()
+                    if enc in ("s16", "u16"):
+                        self.pcm_encoding = enc
+                        self.logger.bind(tag=TAG).info(
+                            f"PCM编码设定: {self.pcm_encoding} (来源: Header)"
+                        )
+                    else:
+                        self.logger.bind(tag=TAG).warning(
+                            f"收到未知PCM编码: {enc}，保持默认: {self.pcm_encoding}"
+                        )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"解析PCM编码失败: {_e}")
+
+            # 解析ASR语言覆盖，可选头：ASR-Language/asr-language/asr_language（例如 zh/en/yue）
+            try:
+                asr_lang_header = (
+                    self.headers.get("ASR-Language")
+                    or self.headers.get("asr-language")
+                    or self.headers.get("asr_language")
+                )
+                if asr_lang_header:
+                    lang = str(asr_lang_header).strip().lower()
+                    # 简单校验（允许字母和连字符）
+                    if all(c.isalpha() or c in ("-", "_") for c in lang):
+                        self.asr_language = lang
+                        self.logger.bind(tag=TAG).info(
+                            f"ASR语言偏好: {self.asr_language} (来源: Header)"
+                        )
+                    else:
+                        self.logger.bind(tag=TAG).warning(
+                            f"收到非法ASR语言标记: {lang}，已忽略"
+                        )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(f"解析ASR语言失败: {_e}")
+
+            # 进行认证
+            await self.auth.authenticate(self.headers)
+
+            # 认证通过,继续处理
+            self.websocket = ws
+            self.ws_open = True
+            self.device_id = self.headers.get("device-id", None)
+
+            # 检查是否来自MQTT连接
+            request_path = ws.request.path
+            self.conn_from_mqtt_gateway = request_path.endswith("?from=mqtt_gateway")
+            if self.conn_from_mqtt_gateway:
+                self.logger.bind(tag=TAG).info("连接来自:MQTT网关")
+
+            # 初始化活动时间戳
+            self.last_activity_time = time.time() * 1000
+
+            # 启动超时检查任务
+            self.timeout_task = asyncio.create_task(self._check_timeout())
+            # 启动Ping保活任务，减少中间网络/NAT闲置断开
+            try:
+                self._ping_keepalive_task = asyncio.create_task(self._ping_keepalive())
+            except Exception:
+                self._ping_keepalive_task = None
+            # 初始即标记活跃，避免握手后短时间被清理
+            self.mark_active()
+
+            # 尝试短窗回放最近视觉结果（异步触发，避免阻塞握手后流程）
+            try:
+                asyncio.create_task(self._try_replay_recent_vision_result())
+            except Exception:
+                pass
+
+            self.welcome_msg = self.config["xiaozhi"]
+            self.welcome_msg["session_id"] = self.session_id
+
+            # 获取差异化配置
+            self._initialize_private_config()
+            # 异步初始化
+            self.executor.submit(self._initialize_components)
+
+            try:
+                async for message in self.websocket:
+                    await self._route_message(message)
+            except websockets.exceptions.ConnectionClosed:
+                self.logger.bind(tag=TAG).info("客户端断开连接")
+
+        except AuthenticationError as e:
+            self.logger.bind(tag=TAG).error(f"Authentication failed: {str(e)}")
+            return
+        except Exception as e:
+            stack_trace = traceback.format_exc()
+            self.logger.bind(tag=TAG).error(f"Connection error: {str(e)}-{stack_trace}")
+            return
+        finally:
+            # 标记WS关闭
+            try:
+                self.ws_open = False
+            except Exception:
+                pass
+            try:
+                await self._save_and_close(ws)
+            except Exception as final_error:
+                self.logger.bind(tag=TAG).error(f"最终清理时出错: {final_error}")
+                # 确保即使保存记忆失败，也要关闭连接
+                try:
+                    await self.close(ws)
+                except Exception as close_error:
+                    self.logger.bind(tag=TAG).error(
+                        f"强制关闭连接时出错: {close_error}"
+                    )
+
+    async def _save_and_close(self, ws):
+        """保存记忆并关闭连接"""
+        try:
+            if self.memory:
+                # 使用线程池异步保存记忆
+                def save_memory_task():
+                    try:
+                        # 创建新事件循环（避免与主循环冲突）
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(
+                            self.memory.save_memory(self.dialogue.dialogue)
+                        )
+                    except Exception as e:
+                        self.logger.bind(tag=TAG).error(f"保存记忆失败: {e}")
+                    finally:
+                        try:
+                            loop.close()
+                        except Exception:
+                            pass
+
+                # 启动线程保存记忆，不等待完成
+                threading.Thread(target=save_memory_task, daemon=True).start()
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"保存记忆失败: {e}")
+        finally:
+            # 立即关闭连接，不等待记忆保存完成
+            try:
+                await self.close(ws)
+            except Exception as close_error:
+                self.logger.bind(tag=TAG).error(
+                    f"保存记忆后关闭连接失败: {close_error}"
+                )
+
+    async def _route_message(self, message):
+        """消息路由"""
+        if isinstance(message, str):
+            # 收到消息即视为活跃
+            self.mark_active()
+            await handleTextMessage(self, message)
+        elif isinstance(message, bytes):
+            if self.vad is None or self.asr is None:
+                return
+
+            # 处理来自MQTT网关的音频包
+            if self.conn_from_mqtt_gateway and len(message) >= 16:
+                handled = await self._process_mqtt_audio_message(message)
+                if handled:
+                    self.mark_active()
+                    return
+
+            # 不需要头部处理或没有头部时，直接处理原始消息
+            self.asr_audio_queue.put(message)
+            # 更新最后收到音频帧时间（用于静音判定）
+            try:
+                self.last_audio_frame_time = time.time() * 1000
+            except Exception:
+                pass
+            self.mark_active()
+
+    async def _process_mqtt_audio_message(self, message):
+        """
+        处理来自MQTT网关的音频消息，解析16字节头部并提取音频数据
+
+        Args:
+            message: 包含头部的音频消息
+
+        Returns:
+            bool: 是否成功处理了消息
+        """
+        try:
+            # 提取头部信息
+            timestamp = int.from_bytes(message[8:12], "big")
+            audio_length = int.from_bytes(message[12:16], "big")
+
+            # 提取音频数据
+            if audio_length > 0 and len(message) >= 16 + audio_length:
+                # 有指定长度，提取精确的音频数据
+                audio_data = message[16 : 16 + audio_length]
+                # 基于时间戳进行排序处理
+                self._process_websocket_audio(audio_data, timestamp)
+                return True
+            elif len(message) > 16:
+                # 没有指定长度或长度无效，去掉头部后处理剩余数据
+                audio_data = message[16:]
+                self.asr_audio_queue.put(audio_data)
+                return True
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"解析WebSocket音频包失败: {e}")
+
+        # 处理失败，返回False表示需要继续处理
+        return False
+
+    def _process_websocket_audio(self, audio_data, timestamp):
+        """处理WebSocket格式的音频包"""
+        # 初始化时间戳序列管理
+        if not hasattr(self, "audio_timestamp_buffer"):
+            self.audio_timestamp_buffer = {}
+            self.last_processed_timestamp = 0
+            self.max_timestamp_buffer_size = 20
+
+        # 如果时间戳是递增的，直接处理
+        if timestamp >= self.last_processed_timestamp:
+            self.asr_audio_queue.put(audio_data)
+            self.last_processed_timestamp = timestamp
+
+            # 处理缓冲区中的后续包
+            processed_any = True
+            while processed_any:
+                processed_any = False
+                for ts in sorted(self.audio_timestamp_buffer.keys()):
+                    if ts > self.last_processed_timestamp:
+                        buffered_audio = self.audio_timestamp_buffer.pop(ts)
+                        self.asr_audio_queue.put(buffered_audio)
+                        self.last_processed_timestamp = ts
+                        processed_any = True
+                        break
+        else:
+            # 乱序包，暂存
+            if len(self.audio_timestamp_buffer) < self.max_timestamp_buffer_size:
+                self.audio_timestamp_buffer[timestamp] = audio_data
+            else:
+                self.asr_audio_queue.put(audio_data)
+
+    async def handle_restart(self, message):
+        """处理服务器重启请求"""
+        try:
+
+            self.logger.bind(tag=TAG).info("收到服务器重启指令，准备执行...")
+
+            # 发送确认响应
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "server",
+                        "status": "success",
+                        "message": "服务器重启中...",
+                        "content": {"action": "restart"},
+                    }
+                )
+            )
+
+            # 异步执行重启操作
+            def restart_server():
+                """实际执行重启的方法"""
+                time.sleep(1)
+                self.logger.bind(tag=TAG).info("执行服务器重启...")
+                subprocess.Popen(
+                    [sys.executable, "app.py"],
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                    start_new_session=True,
+                )
+                os._exit(0)
+
+            # 使用线程执行重启避免阻塞事件循环
+            threading.Thread(target=restart_server, daemon=True).start()
+
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"重启失败: {str(e)}")
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "server",
+                        "status": "error",
+                        "message": f"Restart failed: {str(e)}",
+                        "content": {"action": "restart"},
+                    }
+                )
+            )
+
+    def _initialize_components(self):
+        try:
+            self.selected_module_str = build_module_string(
+                self.config.get("selected_module", {})
+            )
+            self.logger = create_connection_logger(self.selected_module_str)
+
+            """初始化组件"""
+            if self.config.get("prompt") is not None:
+                user_prompt = self.config["prompt"]
+                # 使用快速提示词进行初始化
+                prompt = self.prompt_manager.get_quick_prompt(user_prompt)
+                self.change_system_prompt(prompt)
+                self.logger.bind(tag=TAG).info(
+                    f"快速初始化组件: prompt成功 {prompt[:50]}..."
+                )
+
+            """初始化本地组件（健壮化：若全局实例缺失则按需即时创建）"""
+            # VAD：优先复用全局实例，缺失则按需初始化
+            if self.vad is None:
+                if self._vad is not None:
+                    self.vad = self._vad
+                else:
+                    try:
+                        modules = initialize_modules(
+                            self.logger,
+                            self.config,
+                            init_vad=True,
+                            init_asr=False,
+                            init_llm=False,
+                            init_tts=False,
+                            init_memory=False,
+                            init_intent=False,
+                        )
+                        self.vad = modules.get("vad", None)
+                        if self.vad is not None:
+                            self.logger.bind(tag=TAG).info("按需初始化VAD成功")
+                        else:
+                            self.logger.bind(tag=TAG).warning("按需初始化VAD失败，继续无VAD模式")
+                    except Exception as _e:
+                        self.logger.bind(tag=TAG).error(f"按需初始化VAD异常: {_e}")
+
+            # ASR：优先复用全局本地实例；若全局缺失或为远端/不可用，则即时初始化
+            if self.asr is None:
+                try:
+                    if (
+                        self._asr is not None
+                        and getattr(self._asr, "interface_type", None) == InterfaceType.LOCAL
+                    ):
+                        self.asr = self._asr
+                    else:
+                        self.asr = self._initialize_asr()
+                except Exception as _e:
+                    self.logger.bind(tag=TAG).error(f"按需初始化ASR异常: {_e}")
+
+            # 初始化声纹识别
+            self._initialize_voiceprint()
+
+            # 打开语音识别通道
+            if self.asr is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self.asr.open_audio_channels(self), self.loop
+                )
+            if self.tts is None:
+                self.tts = self._initialize_tts()
+            # 打开语音合成通道
+            asyncio.run_coroutine_threadsafe(
+                self.tts.open_audio_channels(self), self.loop
+            )
+
+            # 重要：在TTS通道就绪后，触发一次“最近视觉结果”的短窗回放
+            # 之前在握手后立即触发，可能因TTS尚未初始化导致回放失败
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._try_replay_recent_vision_result(), self.loop
+                )
+            except Exception as _e:
+                self.logger.bind(tag=TAG).warning(
+                    f"TTS初始化后触发视觉回放失败: {_e}"
+                )
+
+            """加载记忆"""
+            self._initialize_memory()
+            """加载意图识别"""
+            self._initialize_intent()
+            """初始化上报线程"""
+            self._init_report_threads()
+            """更新系统提示词"""
+            self._init_prompt_enhancement()
+
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"实例化组件失败: {e}")
+
+    def _init_prompt_enhancement(self):
+        # 更新上下文信息
+        self.prompt_manager.update_context_info(self, self.client_ip)
+        enhanced_prompt = self.prompt_manager.build_enhanced_prompt(
+            self.config["prompt"], self.device_id, self.client_ip
+        )
+        if enhanced_prompt:
+            self.change_system_prompt(enhanced_prompt)
+            self.logger.bind(tag=TAG).info("系统提示词已增强更新")
+
+    def _init_report_threads(self):
+        """初始化ASR和TTS上报线程"""
+        if not self.read_config_from_api or self.need_bind:
+            return
+        if self.chat_history_conf == 0:
+            return
+        if self.report_thread is None or not self.report_thread.is_alive():
+            self.report_thread = threading.Thread(
+                target=self._report_worker, daemon=True
+            )
+            self.report_thread.start()
+            self.logger.bind(tag=TAG).info("TTS上报线程已启动")
+
+    def _initialize_tts(self):
+        """初始化TTS"""
+        tts = None
+        if not self.need_bind:
+            tts = initialize_tts(self.config)
+
+        if tts is None:
+            tts = DefaultTTS(self.config, delete_audio_file=True)
+
+        return tts
+
+    def _initialize_asr(self):
+        """初始化ASR（兼容未预置ASR的情况）"""
+        try:
+            if self._asr is not None and getattr(self._asr, "interface_type", None) == InterfaceType.LOCAL:
+                # 如果公共ASR是本地服务，则直接复用
+                return self._asr
+        except Exception as e:
+            self.logger.bind(tag=TAG).warning(f"预置ASR检查失败，回退动态初始化: {e}")
+
+        # 远端服务或未提供预置ASR：按配置动态初始化新实例
+        return initialize_asr(self.config)
+
+    def _initialize_voiceprint(self):
+        """为当前连接初始化声纹识别"""
+        try:
+            voiceprint_config = self.config.get("voiceprint", {})
+            if voiceprint_config:
+                voiceprint_provider = VoiceprintProvider(voiceprint_config)
+                if voiceprint_provider is not None and voiceprint_provider.enabled:
+                    self.voiceprint_provider = voiceprint_provider
+                    self.logger.bind(tag=TAG).info("声纹识别功能已在连接时动态启用")
+                else:
+                    self.logger.bind(tag=TAG).warning("声纹识别功能启用但配置不完整")
+            else:
+                self.logger.bind(tag=TAG).info("声纹识别功能未启用")
+        except Exception as e:
+            self.logger.bind(tag=TAG).warning(f"声纹识别初始化失败: {str(e)}")
+
+    def _initialize_private_config(self):
+        """如果是从配置文件获取，则进行二次实例化"""
+        if not self.read_config_from_api:
+            return
+        """从接口获取差异化的配置进行二次实例化，非全量重新实例化"""
+        try:
+            begin_time = time.time()
+            private_config = get_private_config_from_api(
+                self.config,
+                self.headers.get("device-id"),
+                self.headers.get("client-id", self.headers.get("device-id")),
+            )
+            private_config["delete_audio"] = bool(self.config.get("delete_audio", True))
+            self.logger.bind(tag=TAG).info(
+                f"{time.time() - begin_time} 秒，获取差异化配置成功: {json.dumps(filter_sensitive_info(private_config), ensure_ascii=False)}"
+            )
+        except DeviceNotFoundException as e:
+            self.need_bind = True
+            private_config = {}
+        except DeviceBindException as e:
+            self.need_bind = True
+            self.bind_code = e.bind_code
+            private_config = {}
+        except Exception as e:
+            self.need_bind = True
+            self.logger.bind(tag=TAG).error(f"获取差异化配置失败: {e}")
+            private_config = {}
+
+        init_llm, init_tts, init_memory, init_intent = (
+            False,
+            False,
+            False,
+            False,
+        )
+
+        init_vad = check_vad_update(self.common_config, private_config)
+        init_asr = check_asr_update(self.common_config, private_config)
+
+        if init_vad:
+            self.config["VAD"] = private_config["VAD"]
+            self.config["selected_module"]["VAD"] = private_config["selected_module"][
+                "VAD"
+            ]
+        if init_asr:
+            self.config["ASR"] = private_config["ASR"]
+            self.config["selected_module"]["ASR"] = private_config["selected_module"][
+                "ASR"
+            ]
+        if private_config.get("TTS", None) is not None:
+            init_tts = True
+            self.config["TTS"] = private_config["TTS"]
+            self.config["selected_module"]["TTS"] = private_config["selected_module"][
+                "TTS"
+            ]
+        if private_config.get("LLM", None) is not None:
+            init_llm = True
+            self.config["LLM"] = private_config["LLM"]
+            self.config["selected_module"]["LLM"] = private_config["selected_module"][
+                "LLM"
+            ]
+        if private_config.get("VLLM", None) is not None:
+            self.config["VLLM"] = private_config["VLLM"]
+            self.config["selected_module"]["VLLM"] = private_config["selected_module"][
+                "VLLM"
+            ]
+        if private_config.get("Memory", None) is not None:
+            init_memory = True
+            self.config["Memory"] = private_config["Memory"]
+            self.config["selected_module"]["Memory"] = private_config[
+                "selected_module"
+            ]["Memory"]
+        if private_config.get("Intent", None) is not None:
+            init_intent = True
+            self.config["Intent"] = private_config["Intent"]
+            model_intent = private_config.get("selected_module", {}).get("Intent", {})
+            self.config["selected_module"]["Intent"] = model_intent
+            # 加载插件配置
+            if model_intent != "Intent_nointent":
+                plugin_from_server = private_config.get("plugins", {})
+                for plugin, config_str in plugin_from_server.items():
+                    plugin_from_server[plugin] = json.loads(config_str)
+                self.config["plugins"] = plugin_from_server
+                self.config["Intent"][self.config["selected_module"]["Intent"]][
+                    "functions"
+                ] = plugin_from_server.keys()
+        if private_config.get("prompt", None) is not None:
+            self.config["prompt"] = private_config["prompt"]
+        # 获取声纹信息
+        if private_config.get("voiceprint", None) is not None:
+            self.config["voiceprint"] = private_config["voiceprint"]
+        if private_config.get("summaryMemory", None) is not None:
+            self.config["summaryMemory"] = private_config["summaryMemory"]
+        if private_config.get("device_max_output_size", None) is not None:
+            self.max_output_size = int(private_config["device_max_output_size"])
+        if private_config.get("chat_history_conf", None) is not None:
+            self.chat_history_conf = int(private_config["chat_history_conf"])
+        if private_config.get("mcp_endpoint", None) is not None:
+            self.config["mcp_endpoint"] = private_config["mcp_endpoint"]
+        try:
+            modules = initialize_modules(
+                self.logger,
+                private_config,
+                init_vad,
+                init_asr,
+                init_llm,
+                init_tts,
+                init_memory,
+                init_intent,
+            )
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"初始化组件失败: {e}")
+            modules = {}
+        if modules.get("tts", None) is not None:
+            self.tts = modules["tts"]
+        if modules.get("vad", None) is not None:
+            self.vad = modules["vad"]
+        if modules.get("asr", None) is not None:
+            self.asr = modules["asr"]
+        if modules.get("llm", None) is not None:
+            self.llm = modules["llm"]
+        if modules.get("intent", None) is not None:
+            self.intent = modules["intent"]
+        if modules.get("memory", None) is not None:
+            self.memory = modules["memory"]
+
+    def _initialize_memory(self):
+        if self.memory is None:
+            return
+        """初始化记忆模块"""
+        self.memory.init_memory(
+            role_id=self.device_id,
+            llm=self.llm,
+            summary_memory=self.config.get("summaryMemory", None),
+            save_to_file=not self.read_config_from_api,
+        )
+
+        # 获取记忆总结配置
+        memory_config = self.config["Memory"]
+        memory_type = self.config["Memory"][self.config["selected_module"]["Memory"]][
+            "type"
+        ]
+        # 如果使用 nomen，直接返回
+        if memory_type == "nomem":
+            return
+        # 使用 mem_local_short 模式
+        elif memory_type == "mem_local_short":
+            memory_llm_name = memory_config[self.config["selected_module"]["Memory"]][
+                "llm"
+            ]
+            if memory_llm_name and memory_llm_name in self.config["LLM"]:
+                # 如果配置了专用LLM，则创建独立的LLM实例
+                from core.utils import llm as llm_utils
+
+                memory_llm_config = self.config["LLM"][memory_llm_name]
+                memory_llm_type = memory_llm_config.get("type", memory_llm_name)
+                memory_llm = llm_utils.create_instance(
+                    memory_llm_type, memory_llm_config
+                )
+                self.logger.bind(tag=TAG).info(
+                    f"为记忆总结创建了专用LLM: {memory_llm_name}, 类型: {memory_llm_type}"
+                )
+                self.memory.set_llm(memory_llm)
+            else:
+                # 否则使用主LLM
+                self.memory.set_llm(self.llm)
+                self.logger.bind(tag=TAG).info("使用主LLM作为意图识别模型")
+
+    def _initialize_intent(self):
+        if self.intent is None:
+            return
+        self.intent_type = self.config["Intent"][
+            self.config["selected_module"]["Intent"]
+        ]["type"]
+        if self.intent_type == "function_call" or self.intent_type == "intent_llm":
+            self.load_function_plugin = True
+        """初始化意图识别模块"""
+        # 获取意图识别配置
+        intent_config = self.config["Intent"]
+        intent_type = self.config["Intent"][self.config["selected_module"]["Intent"]][
+            "type"
+        ]
+
+        # 如果使用 nointent，直接返回
+        if intent_type == "nointent":
+            return
+        # 使用 intent_llm 模式
+        elif intent_type == "intent_llm":
+            intent_llm_name = intent_config[self.config["selected_module"]["Intent"]][
+                "llm"
+            ]
+
+            if intent_llm_name and intent_llm_name in self.config["LLM"]:
+                # 如果配置了专用LLM，则创建独立的LLM实例
+                from core.utils import llm as llm_utils
+
+                intent_llm_config = self.config["LLM"][intent_llm_name]
+                intent_llm_type = intent_llm_config.get("type", intent_llm_name)
+                intent_llm = llm_utils.create_instance(
+                    intent_llm_type, intent_llm_config
+                )
+                self.logger.bind(tag=TAG).info(
+                    f"为意图识别创建了专用LLM: {intent_llm_name}, 类型: {intent_llm_type}"
+                )
+                self.intent.set_llm(intent_llm)
+            else:
+                # 否则使用主LLM
+                self.intent.set_llm(self.llm)
+                self.logger.bind(tag=TAG).info("使用主LLM作为意图识别模型")
+
+        """加载统一工具处理器"""
+        self.func_handler = UnifiedToolHandler(self)
+
+        # 异步初始化工具处理器
+        if hasattr(self, "loop") and self.loop:
+            asyncio.run_coroutine_threadsafe(self.func_handler._initialize(), self.loop)
+
+    def change_system_prompt(self, prompt):
+        self.prompt = prompt
+        # 更新系统prompt至上下文
+        self.dialogue.update_system_message(self.prompt)
+
+    def chat(self, query, depth=0):
+        self.logger.bind(tag=TAG).info(f"大模型收到用户消息: {query}")
+        self.llm_finish_task = False
+
+        # 为最顶层时新建会话ID和发送FIRST请求
+        if depth == 0:
+            self.sentence_id = str(uuid.uuid4().hex)
+            self.dialogue.put(Message(role="user", content=query))
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=self.sentence_id,
+                    sentence_type=SentenceType.FIRST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+            # 下发FIRST即视为活跃
+            self.mark_active()
+
+        # Define intent functions
+        functions = None
+        if self.intent_type == "function_call" and hasattr(self, "func_handler"):
+            functions = self.func_handler.get_functions()
+        response_message = []
+
+        try:
+            # 使用带记忆的对话
+            memory_str = None
+            if self.memory is not None:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.memory.query_memory(query), self.loop
+                )
+                memory_str = future.result()
+
+            if self.intent_type == "function_call" and functions is not None:
+                # 使用支持functions的streaming接口
+                llm_responses = self.llm.response_with_functions(
+                    self.session_id,
+                    self.dialogue.get_llm_dialogue_with_memory(
+                        memory_str, self.config.get("voiceprint", {})
+                    ),
+                    functions=functions,
+                )
+            else:
+                llm_responses = self.llm.response(
+                    self.session_id,
+                    self.dialogue.get_llm_dialogue_with_memory(
+                        memory_str, self.config.get("voiceprint", {})
+                    ),
+                )
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"LLM 处理出错 {query}: {e}")
+            return None
+
+        # 处理流式响应
+        tool_call_flag = False
+        function_name = None
+        function_id = None
+        function_arguments = ""
+        content_arguments = ""
+        self.client_abort = False
+        emotion_flag = True
+        for response in llm_responses:
+            if self.client_abort:
+                break
+            if self.intent_type == "function_call" and functions is not None:
+                content, tools_call = response
+                if "content" in response:
+                    content = response["content"]
+                    tools_call = None
+                if content is not None and len(content) > 0:
+                    content_arguments += content
+
+                if not tool_call_flag and content_arguments.startswith("<tool_call>"):
+                    # print("content_arguments", content_arguments)
+                    tool_call_flag = True
+
+                if tools_call is not None and len(tools_call) > 0:
+                    tool_call_flag = True
+                    if tools_call[0].id is not None:
+                        function_id = tools_call[0].id
+                    if tools_call[0].function.name is not None:
+                        function_name = tools_call[0].function.name
+                    if tools_call[0].function.arguments is not None:
+                        function_arguments += tools_call[0].function.arguments
+            else:
+                content = response
+
+            # 在llm回复中获取情绪表情，一轮对话只在开头获取一次
+            if emotion_flag and content is not None and content.strip():
+                asyncio.run_coroutine_threadsafe(
+                    textUtils.get_emotion(self, content),
+                    self.loop,
+                )
+                emotion_flag = False
+
+            if content is not None and len(content) > 0:
+                if not tool_call_flag:
+                    # 发送到设备前清洗文本，避免出现 ###/####/**/× 等符号
+                    try:
+                        from core.utils import textUtils as _txu
+                        _clean = _txu.sanitize_for_device(content)
+                    except Exception:
+                        _clean = content
+                    response_message.append(_clean)
+                    self.tts.tts_text_queue.put(
+                        TTSMessageDTO(
+                            sentence_id=self.sentence_id,
+                            sentence_type=SentenceType.MIDDLE,
+                            content_type=ContentType.TEXT,
+                            content_detail=_clean,
+                        )
+                    )
+                    # 每段下发刷新活跃
+                    self.mark_active()
+        # 处理function call
+        if tool_call_flag:
+            bHasError = False
+            if function_id is None:
+                a = extract_json_from_string(content_arguments)
+                if a is not None:
+                    try:
+                        content_arguments_json = json.loads(a)
+                        function_name = content_arguments_json["name"]
+                        function_arguments = json.dumps(
+                            content_arguments_json["arguments"], ensure_ascii=False
+                        )
+                        function_id = str(uuid.uuid4().hex)
+                    except Exception as e:
+                        bHasError = True
+                        response_message.append(a)
+                else:
+                    bHasError = True
+                    response_message.append(content_arguments)
+                if bHasError:
+                    self.logger.bind(tag=TAG).error(
+                        f"function call error: {content_arguments}"
+                    )
+            if not bHasError:
+                # 如需要大模型先处理一轮，添加相关处理后的日志情况
+                if len(response_message) > 0:
+                    text_buff = "".join(response_message)
+                    self.tts_MessageText = text_buff
+                    self.dialogue.put(Message(role="assistant", content=text_buff))
+                response_message.clear()
+                self.logger.bind(tag=TAG).debug(
+                    f"function_name={function_name}, function_id={function_id}, function_arguments={function_arguments}"
+                )
+                function_call_data = {
+                    "name": function_name,
+                    "id": function_id,
+                    "arguments": function_arguments,
+                }
+
+                # 使用统一工具处理器处理所有工具调用
+                result = asyncio.run_coroutine_threadsafe(
+                    self.func_handler.handle_llm_function_call(
+                        self, function_call_data
+                    ),
+                    self.loop,
+                ).result()
+                # 工具执行期间视为活跃，屏蔽空闲超时
+                try:
+                    self._tool_running = True
+                    self.mark_active()
+                except Exception:
+                    pass
+                self._handle_function_result(result, function_call_data, depth=depth)
+                # 工具完成，取消保护
+                try:
+                    self._tool_running = False
+                    self.mark_active()
+                except Exception:
+                    pass
+
+        # 存储对话内容
+        if len(response_message) > 0:
+            text_buff = "".join(response_message)
+            self.tts_MessageText = text_buff
+            self.dialogue.put(Message(role="assistant", content=text_buff))
+            # 非函数调用路径：记录当前轮对话
+            try:
+                self._append_conversation_event(question=query, reply=text_buff, source="realtime")
+            except Exception:
+                pass
+        if depth == 0:
+            self.logger.bind(tag=TAG).info(f"[CHAT_FINISH_DEBUG] chat()发送LAST: sentence_id={self.sentence_id}, tool_call_flag={tool_call_flag}")
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=self.sentence_id,
+                    sentence_type=SentenceType.LAST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+            # 结束段也刷新活跃
+            self.mark_active()
+        self.llm_finish_task = True
+        self.logger.bind(tag=TAG).info(f"[CHAT_FINISH_DEBUG] chat()完成: llm_finish_task=True")
+        # 使用lambda延迟计算，只有在DEBUG级别时才执行get_llm_dialogue()
+        self.logger.bind(tag=TAG).debug(
+            lambda: json.dumps(
+                self.dialogue.get_llm_dialogue(), indent=4, ensure_ascii=False
+            )
+        )
+
+        return True
+
+    def _handle_function_result(self, result, function_call_data, depth):
+        if result.action == Action.RESPONSE:  # 直接回复前端
+            text = result.response
+            try:
+                from core.utils import textUtils as _txu
+                text = _txu.sanitize_for_device(text)
+            except Exception:
+                pass
+            self.tts.tts_one_sentence(self, ContentType.TEXT, content_detail=text)
+            self.dialogue.put(Message(role="assistant", content=text))
+            # 函数调用路径：记录当前轮对话
+            try:
+                self._append_conversation_event(question=self._get_last_user_content(), reply=text, source="realtime")
+            except Exception:
+                pass
+        elif result.action == Action.REQLLM:  # 调用函数后再请求llm生成回复
+            text = result.result
+            if text is not None and len(text) > 0:
+                function_id = function_call_data["id"]
+                function_name = function_call_data["name"]
+                function_arguments = function_call_data["arguments"]
+                self.dialogue.put(
+                    Message(
+                        role="assistant",
+                        tool_calls=[
+                            {
+                                "id": function_id,
+                                "function": {
+                                    "arguments": (
+                                        "{}"
+                                        if function_arguments == ""
+                                        else function_arguments
+                                    ),
+                                    "name": function_name,
+                                },
+                                "type": "function",
+                                "index": 0,
+                            }
+                        ],
+                    )
+                )
+
+                self.dialogue.put(
+                    Message(
+                        role="tool",
+                        tool_call_id=(
+                            str(uuid.uuid4()) if function_id is None else function_id
+                        ),
+                        content=text,
+                    )
+                )
+                self.chat(text, depth=depth + 1)
+        elif result.action == Action.NOTFOUND or result.action == Action.ERROR:
+            text = result.response if result.response else result.result
+            try:
+                from core.utils import textUtils as _txu
+                text = _txu.sanitize_for_device(text)
+            except Exception:
+                pass
+            self.tts.tts_one_sentence(self, ContentType.TEXT, content_detail=text)
+            self.dialogue.put(Message(role="assistant", content=text))
+        else:
+            pass
+
+    def handle_vision_bridge(self, payload: dict):
+        """处理来自HTTP视觉接口的同步结果桥接。
+
+        仅在设备未通过MCP回传结果时作为兜底，避免对话端长时间无响应或断开。
+
+        Args:
+            payload: vision_handler 返回的JSON字典，包含 response 与可选 correlation_id。
+        """
+        try:
+            if not isinstance(payload, dict):
+                return
+            corr_id = payload.get("correlation_id")
+            if corr_id and corr_id in self._seen_vision_ids:
+                return  # 已处理过，避免重复播报
+            text = payload.get("response") or ""
+            if not text:
+                return
+            # 标记已处理
+            if corr_id:
+                if len(self._seen_vision_ids) > 100:
+                    # 简单限制集合大小
+                    self._seen_vision_ids.clear()
+                self._seen_vision_ids.add(corr_id)
+            # 发送到设备前清洗
+            try:
+                from core.utils import textUtils as _txu
+                text = _txu.sanitize_for_device(text)
+            except Exception:
+                pass
+            # 使用分段播报期间，标记视觉在执行并刷新活跃
+            try:
+                # 启动视觉等待保活，直到结果播报完成
+                self.vision_wait_start()
+                self.mark_active()
+            except Exception:
+                pass
+            # 使用分段播报，确保有明确的 FIRST->MIDDLE->LAST 结束，防止残留队列导致后续异常
+            self._speak_vision_response(text)
+            try:
+                # 播报完成后停止视觉保活
+                self.vision_wait_stop()
+                self.mark_active()
+            except Exception:
+                pass
+            self.logger.bind(tag=TAG).info("已通过HTTP桥接视觉结果到会话（分段播报）")
+        except Exception as _e:
+            try:
+                self.logger.bind(tag=TAG).warning(f"处理视觉桥接结果异常: {_e}")
+            except Exception:
+                pass
+
+    # 新增：视觉等待保活启停方法
+    def vision_wait_start(self, interval_sec: float = 8.0):
+        """开始视觉等待保活，周期刷新活跃时间，避免在视觉结果返回前被清理。"""
+        try:
+            # 若已有任务则不重复开启
+            if self._vision_keepalive_task and not self._vision_keepalive_task.done():
+                return
+            self._vision_inflight = True
+
+            async def _keepalive():
+                try:
+                 

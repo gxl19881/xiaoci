@@ -1,0 +1,2 @@
+FROM ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:server_latest
+RUN pip install openpyxl matplotlib

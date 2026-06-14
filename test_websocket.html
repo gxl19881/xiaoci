@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图像生成功能测试</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .test-section { border: 1px solid #ddd; margin: 20px 0; padding: 15px; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .warning { background-color: #fff3cd; border-color: #ffeaa7; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: #f8f9fa; }
+        .message { margin: 5px 0; padding: 5px; border-radius: 3px; }
+        .message.sent { background: #007bff; color: white; margin-left: 20px; }
+        .message.received { background: #28a745; color: white; margin-right: 20px; }
+        .message.error { background: #dc3545; color: white; }
+        .status { font-weight: bold; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>🎨 图像生成功能端到端测试</h1>
+    
+    <div class="test-section">
+        <h3>连接状态</h3>
+        <div id="connectionStatus" class="status">🔴 未连接</div>
+        <button onclick="connectWebSocket()">连接WebSocket</button>
+        <button onclick="disconnectWebSocket()">断开连接</button>
+    </div>
+    
+    <div class="test-section">
+        <h3>图像生成测试</h3>
+        <div>
+            <label>图片描述: </label>
+            <input type="text" id="imagePrompt" value="一只可爱的小猫咪" style="width: 300px;">
+        </div>
+        <div style="margin: 10px 0;">
+            <label>图片风格: </label>
+            <select id="imageStyle">
+                <option value="realistic">写实</option>
+                <option value="cartoon" selected>卡通</option>
+                <option value="abstract">抽象</option>
+                <option value="anime">动漫</option>
+            </select>
+        </div>
+        <div style="margin: 10px 0;">
+            <label>图片尺寸: </label>
+            <select id="imageSize">
+                <option value="240x240" selected>240x240 (ESP32)</option>
+                <option value="512x512">512x512</option>
+                <option value="1024x1024">1024x1024</option>
+            </select>
+        </div>
+        <button onclick="testImageGeneration()">🎨 生成图片</button>
+        <button onclick="testTextMessage()">💬 发送文本指令</button>
+    </div>
+    
+    <div class="test-section">
+        <h3>消息日志</h3>
+        <div id="messages"></div>
+        <button onclick="clearMessages()">清空日志</button>
+    </div>
+    
+    <script>
+        let ws = null;
+        
+        function addMessage(content, type = 'info') {
+            const messages = document.getElementById('messages');
+            const message = document.createElement('div');
+            message.className = `message ${type}`;
+            message.innerHTML = `<strong>${new Date().toLocaleTimeString()}</strong> ${content}`;
+            messages.appendChild(message);
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        function updateConnectionStatus(status, isConnected = false) {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.textContent = status;
+            statusEl.style.color = isConnected ? 'green' : 'red';
+        }
+        
+        function connectWebSocket() {
+            try {
+                // 使用从日志中获取的WebSocket地址
+                ws = new WebSocket('ws://localhost:8000/xiaozhi/v1/');
+                
+                ws.onopen = function(event) {
+                    updateConnectionStatus('🟢 已连接', true);
+                    addMessage('WebSocket连接成功!', 'received');
+                };
+                
+                ws.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        addMessage(`收到消息: ${JSON.stringify(data, null, 2)}`, 'received');
+                        
+                        // 检查是否是图像生成状态更新
+                        if (data.type === 'image_generation_status') {
+                            addMessage(`📸 图像生成状态: ${data.status} - ${data.message}`, 'received');
+                        }
+                    } catch (e) {
+                        addMessage(`收到原始消息: ${event.data}`, 'received');
+                    }
+                };
+                
+                ws.onclose = function(event) {
+                    updateConnectionStatus('🔴 连接关闭', false);
+                    addMessage(`连接关闭: ${event.code} - ${event.reason}`, 'error');
+                };
+                
+                ws.onerror = function(error) {
+                    updateConnectionStatus('🔴 连接错误', false);
+                    addMessage(`WebSocket错误: ${error}`, 'error');
+                };
+                
+            } catch (error) {
+                addMessage(`连接失败: ${error}`, 'error');
+            }
+        }
+        
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function testImageGeneration() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('请先连接WebSocket!', 'error');
+                return;
+            }
+            
+            const prompt = document.getElementById('imagePrompt').value;
+            const style = document.getElementById('imageStyle').value;
+            const size = document.getElementById('imageSize').value;
+            
+            const message = {
+                type: 'function_call',
+                function_name: 'generate_image',
+                parameters: {
+                    prompt: prompt,
+                    style: style,
+                    size: size
+                }
+            };
+            
+            ws.send(JSON.stringify(message));
+            addMessage(`发送图像生成请求: ${prompt} (${style}, ${size})`, 'sent');
+        }
+        
+        function testTextMessage() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('请先连接WebSocket!', 'error');
+                return;
+            }
+            
+            const prompt = document.getElementById('imagePrompt').value;
+            const message = {
+                type: 'text',
+                content: `请帮我生成一张${prompt}的图片`
+            };
+            
+            ws.send(JSON.stringify(message));
+            addMessage(`发送文本指令: 请帮我生成一张${prompt}的图片`, 'sent');
+        }
+        
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+        
+        // 页面加载时显示说明
+        window.onload = function() {
+            addMessage('🎯 测试说明:', 'info');
+            addMessage('1. 点击"连接WebSocket"建立连接', 'info');
+            addMessage('2. 输入图片描述并选择风格和尺寸', 'info');
+            addMessage('3. 点击"生成图片"测试功能调用', 'info');
+            addMessage('4. 观察消息日志中的状态更新', 'info');
+            addMessage('5. 验证图像生成和ESP32传输流程', 'info');
+        };
+    </script>
+</body>
+</html>
